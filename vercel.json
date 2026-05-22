@@ -1,14 +1,32 @@
 {
   "builds": [
     {
-      "src": "app.py",
+      "src": "run.py",
       "use": "@vercel/python"
     }
   ],
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "app.py"
+      "dest": "run.py"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/ingest",
+      "schedule": "0 */6 * * *"
+    },
+    {
+      "path": "/api/cron/predict",
+      "schedule": "30 */6 * * *"
+    },
+    {
+      "path": "/api/cron/accuracy",
+      "schedule": "0 */3 * * *"
+    },
+    {
+      "path": "/api/cron/newsletter",
+      "schedule": "0 7 * * *"
     }
   ]
 }

@@ -4,12 +4,13 @@ APScheduler job definitions for data ingestion and processing.
 Jobs:
 1. ingest_football_fixtures - Every 6 hours
 2. ingest_football_form - Every 6 hours
-3. ingest_odds - Every 15 minutes
+3. ingest_odds - Every 6 hours (conserve 500 req/month free tier)
 4. ingest_basketball - Every 6 hours
 5. ingest_tennis - Every 6 hours
-6. generate_predictions - Every 6 hours
-7. send_newsletter_digest - Daily at 7AM UTC
-8. log_accuracy - Every 3 hours
+6. generate_predictions - Every 6 hours (1X2)
+7. generate_market_predictions - Every 6 hours (O/U, BTTS, DC, corners, HT/FT)
+8. send_newsletter_digest - Daily at 7AM UTC
+9. log_accuracy - Every 3 hours
 """
 import logging
 from datetime import datetime
@@ -21,7 +22,7 @@ def register_jobs(scheduler, app):
     """Register all scheduled jobs with the APScheduler."""
 
     # Job 1: Ingest football fixtures (every 6 hours)
-    @scheduler.scheduled_job('interval', hours=6, id='ingest_football_fixtures')
+    @scheduler.scheduled_job('interval', hours=6, id='ingest_football_fixtures', next_run_time=datetime.now())
     def ingest_football_fixtures():
         """Fetch upcoming fixtures from API-Football."""
         with app.app_context():
@@ -66,8 +67,8 @@ def register_jobs(scheduler, app):
             except Exception as e:
                 logger.error(f'Failed to ingest football form: {e}')
 
-    # Job 3: Ingest odds (every 15 minutes)
-    @scheduler.scheduled_job('interval', minutes=15, id='ingest_odds')
+    # Job 3: Ingest odds (every 6 hours — conserve 500 req/month free tier)
+    @scheduler.scheduled_job('interval', hours=6, id='ingest_odds', next_run_time=datetime.now())
     def ingest_odds():
         """Fetch latest odds from The Odds API."""
         with app.app_context():
@@ -86,7 +87,7 @@ def register_jobs(scheduler, app):
                 logger.error(f'Failed to ingest odds: {e}')
 
     # Job 4: Ingest basketball data (every 6 hours)
-    @scheduler.scheduled_job('interval', hours=6, id='ingest_basketball')
+    @scheduler.scheduled_job('interval', hours=6, id='ingest_basketball', next_run_time=datetime.now())
     def ingest_basketball():
         """Fetch upcoming basketball games from ESPN."""
         with app.app_context():
@@ -104,7 +105,7 @@ def register_jobs(scheduler, app):
                 logger.error(f'Failed to ingest basketball data: {e}')
 
     # Job 5: Ingest tennis data (every 6 hours)
-    @scheduler.scheduled_job('interval', hours=6, id='ingest_tennis')
+    @scheduler.scheduled_job('interval', hours=6, id='ingest_tennis', next_run_time=datetime.now())
     def ingest_tennis():
         """Fetch upcoming ATP/WTA matches from ESPN."""
         with app.app_context():
@@ -122,7 +123,7 @@ def register_jobs(scheduler, app):
                 logger.error(f'Failed to ingest tennis data: {e}')
 
     # Job 6: Generate predictions (every 6 hours)
-    @scheduler.scheduled_job('interval', hours=6, id='generate_predictions')
+    @scheduler.scheduled_job('interval', hours=6, id='generate_predictions', next_run_time=datetime.now())
     def generate_predictions():
         """Run prediction engine on all upcoming fixtures without predictions."""
         with app.app_context():
@@ -135,7 +136,20 @@ def register_jobs(scheduler, app):
             except Exception as e:
                 logger.error(f'Failed to generate predictions: {e}')
 
-    # Job 7: Send newsletter digest (daily at 7AM UTC)
+    # Job 7: Generate market predictions (every 6 hours, runs after 1X2 predictions)
+    @scheduler.scheduled_job('interval', hours=6, id='generate_market_predictions', next_run_time=datetime.now())
+    def generate_market_predictions():
+        """Run market prediction engine (O/U, BTTS, Double Chance, Corners, HT/FT)."""
+        with app.app_context():
+            try:
+                from ..services.market_prediction_service import MarketPredictionService
+                service = MarketPredictionService()
+                count = service.generate_all_predictions_for_upcoming(days_ahead=3)
+                logger.info(f'Generated {count} market predictions')
+            except Exception as e:
+                logger.error(f'Failed to generate market predictions: {e}')
+
+    # Job 8: Send newsletter digest (daily at 7AM UTC)
     @scheduler.scheduled_job('cron', hour=7, minute=0, id='send_newsletter_digest')
     def send_newsletter_digest():
         """Email top 3 picks to all active newsletter subscribers."""
@@ -149,7 +163,7 @@ def register_jobs(scheduler, app):
             except Exception as e:
                 logger.error(f'Failed to send newsletter digest: {e}')
 
-    # Job 8: Log accuracy (every 3 hours)
+    # Job 9: Log accuracy (every 3 hours)
     @scheduler.scheduled_job('interval', hours=3, id='log_accuracy')
     def log_accuracy():
         """Check finished fixtures and log actual outcomes vs predictions."""
@@ -212,6 +226,7 @@ def run_job_manually(job_id, app):
         'ingest_basketball': lambda: _run_ingest_basketball(app),
         'ingest_tennis': lambda: _run_ingest_tennis(app),
         'generate_predictions': lambda: _run_generate_predictions(app),
+        'generate_market_predictions': lambda: _run_generate_market_predictions(app),
         'send_newsletter_digest': lambda: _run_send_newsletter(app),
         'log_accuracy': lambda: _run_log_accuracy(app),
     }
@@ -280,6 +295,13 @@ def _run_generate_predictions(app):
         from ..services.prediction_service import PredictionService
         service = PredictionService()
         return service.generate_predictions_for_upcoming()
+
+
+def _run_generate_market_predictions(app):
+    with app.app_context():
+        from ..services.market_prediction_service import MarketPredictionService
+        service = MarketPredictionService()
+        return service.generate_all_predictions_for_upcoming(days_ahead=3)
 
 
 def _run_send_newsletter(app):

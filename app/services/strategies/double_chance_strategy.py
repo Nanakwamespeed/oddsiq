@@ -1,8 +1,11 @@
 """Double Chance prediction strategy."""
 import logging
 from .base_market_strategy import BaseMarketStrategy
+from ..prediction_engine import FootballPredictionEngine
 
 logger = logging.getLogger(__name__)
+
+_engine = FootballPredictionEngine()
 
 
 class DoubleChanceStrategy(BaseMarketStrategy):
@@ -31,58 +34,19 @@ class DoubleChanceStrategy(BaseMarketStrategy):
 
     def get_1x2_probabilities(self, fixture):
         """
-        Calculate individual home/draw/away probabilities.
-
-        Reuses logic from the main prediction service.
+        Return calibrated H/D/A probabilities from the Poisson engine.
         """
-        from ..prediction_service import PredictionService
-
         try:
-            pred_service = PredictionService()
-            result = pred_service.calculate_confidence_score(fixture)
-
-            home_score = result.get('home_score', 0.5)
-            away_score = result.get('away_score', 0.5)
-
-            # Convert scores to rough probabilities
-            total = home_score + away_score
-            if total > 0:
-                home_prob = home_score / total
-                away_prob = away_score / total
-            else:
-                home_prob = 0.45
-                away_prob = 0.35
-
-            # Estimate draw probability based on score difference
-            score_diff = abs(home_score - away_score)
-            if score_diff < 0.05:
-                draw_prob = 0.30
-            elif score_diff < 0.10:
-                draw_prob = 0.25
-            elif score_diff < 0.20:
-                draw_prob = 0.22
-            else:
-                draw_prob = 0.18
-
-            # Normalize so they sum to 1
-            total_prob = home_prob + draw_prob + away_prob
-            home_prob /= total_prob
-            draw_prob /= total_prob
-            away_prob /= total_prob
-
+            result = _engine.predict(fixture)
+            probs = result['probabilities']
             return {
-                'home': home_prob,
-                'draw': draw_prob,
-                'away': away_prob
+                'home': probs.get('home', 0.40),
+                'draw': probs.get('draw', 0.25),
+                'away': probs.get('away', 0.35),
             }
         except Exception as e:
             logger.error(f"Failed to get 1X2 probabilities: {e}")
-            # Return defaults
-            return {
-                'home': 0.40,
-                'draw': 0.25,
-                'away': 0.35
-            }
+            return {'home': 0.40, 'draw': 0.25, 'away': 0.35}
 
     def _calculate_confidence_for_probability(self, probability):
         """Convert raw probability to confidence score."""

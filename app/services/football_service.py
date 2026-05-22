@@ -134,8 +134,8 @@ class FootballService:
             if not league:
                 continue
 
-            # Fetch fixtures for multiple days
-            for day_offset in range(days_ahead):
+            # Fetch fixtures for multiple days (look back 3 days to catch finished results)
+            for day_offset in range(-3, days_ahead):
                 date = datetime.utcnow() + timedelta(days=day_offset)
                 date_str = date.strftime('%Y%m%d')
 

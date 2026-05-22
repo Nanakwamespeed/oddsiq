@@ -12,12 +12,13 @@ class Config:
     # Flask
     SECRET_KEY = os.getenv('SECRET_KEY', 'dev-secret-key')
 
-    # Database
-    SQLALCHEMY_DATABASE_URI = os.getenv('DATABASE_URL', 'mysql+pymysql://root:password@localhost/oddsiq')
+    # Database — expects DATABASE_URL in env (Neon PostgreSQL)
+    SQLALCHEMY_DATABASE_URI = os.getenv('DATABASE_URL', '').replace('postgres://', 'postgresql://')
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ENGINE_OPTIONS = {
         'pool_recycle': 300,
         'pool_pre_ping': True,
+        'connect_args': {'sslmode': 'require'},
     }
 
     # JWT
@@ -35,8 +36,8 @@ class Config:
     # CORS
     FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5173')
 
-    # Rate limiting
-    RATELIMIT_STORAGE_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+    # Rate limiting — use memory backend unless Redis is provided
+    RATELIMIT_STORAGE_URL = os.getenv('REDIS_URL', 'memory://')
     RATELIMIT_DEFAULT = '100/minute'
     RATELIMIT_HEADERS_ENABLED = True
 

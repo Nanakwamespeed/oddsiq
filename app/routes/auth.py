@@ -27,6 +27,9 @@ def register():
 
     email = data.get('email', '').strip().lower()
     password = data.get('password', '')
+    first_name = data.get('first_name', '').strip()
+    last_name = data.get('last_name', '').strip()
+    other_names = data.get('other_names', '').strip()
 
     # Validate email
     if not email or not validate_email(email):
@@ -36,12 +39,24 @@ def register():
     if not password or len(password) < 6:
         return json_error('Password must be at least 6 characters', 400)
 
+    # Validate required name fields
+    if not first_name:
+        return json_error('First name is required', 400)
+    if not last_name:
+        return json_error('Last name is required', 400)
+
     # Check if user exists
     if User.query.filter_by(email=email).first():
         return json_error('Email already registered', 409)
 
     # Create user
-    user = User(email=email, role='free')
+    user = User(
+        email=email,
+        role='free',
+        first_name=first_name,
+        last_name=last_name,
+        other_names=other_names or None,
+    )
     user.set_password(password)
 
     db.session.add(user)

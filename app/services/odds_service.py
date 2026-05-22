@@ -379,19 +379,32 @@ class OddsService:
 
         # Map sport keys to league info
         SPORT_KEY_MAP = {
-            'soccer_epl': ('football', 'Premier League', 'England'),
-            'soccer_spain_la_liga': ('football', 'La Liga', 'Spain'),
-            'soccer_germany_bundesliga': ('football', 'Bundesliga', 'Germany'),
-            'soccer_italy_serie_a': ('football', 'Serie A', 'Italy'),
-            'soccer_france_ligue_one': ('football', 'Ligue 1', 'France'),
-            'basketball_nba': ('basketball', 'NBA', 'USA'),
-            'basketball_euroleague': ('basketball', 'EuroLeague', 'Europe'),
+            'soccer_epl': ('football', 'Premier League', 'England', 'domestic'),
+            'soccer_england_championship': ('football', 'Championship', 'England', 'domestic'),
+            'soccer_spain_la_liga': ('football', 'La Liga', 'Spain', 'domestic'),
+            'soccer_germany_bundesliga': ('football', 'Bundesliga', 'Germany', 'domestic'),
+            'soccer_italy_serie_a': ('football', 'Serie A', 'Italy', 'domestic'),
+            'soccer_france_ligue_one': ('football', 'Ligue 1', 'France', 'domestic'),
+            'soccer_netherlands_eredivisie': ('football', 'Eredivisie', 'Netherlands', 'domestic'),
+            'soccer_portugal_primeira_liga': ('football', 'Primeira Liga', 'Portugal', 'domestic'),
+            'soccer_scotland_premiership': ('football', 'Scottish Premiership', 'Scotland', 'domestic'),
+            'soccer_belgium_first_div': ('football', 'Belgian First Division A', 'Belgium', 'domestic'),
+            'soccer_turkey_super_league': ('football', 'Süper Lig', 'Turkey', 'domestic'),
+            'soccer_usa_mls': ('football', 'MLS', 'USA', 'domestic'),
+            'soccer_mexico_ligamx': ('football', 'Liga MX', 'Mexico', 'domestic'),
+            'soccer_brazil_campeonato': ('football', 'Brasileirão', 'Brazil', 'domestic'),
+            'soccer_argentina_primera_division': ('football', 'Primera División', 'Argentina', 'domestic'),
+            'soccer_uefa_champs_league': ('football', 'UEFA Champions League', 'Europe', 'international_club'),
+            'soccer_uefa_europa_league': ('football', 'UEFA Europa League', 'Europe', 'international_club'),
+            'soccer_conmebol_copa_libertadores': ('football', 'Copa Libertadores', 'South America', 'international_club'),
+            'basketball_nba': ('basketball', 'NBA', 'USA', 'domestic'),
+            'basketball_euroleague': ('basketball', 'EuroLeague', 'Europe', 'international_club'),
         }
 
         if sport_key not in SPORT_KEY_MAP:
             return None
 
-        sport_name, league_name, country = SPORT_KEY_MAP[sport_key]
+        sport_name, league_name, country, league_type = SPORT_KEY_MAP[sport_key]
 
         # Get or create sport
         sport = Sport.query.filter_by(name=sport_name).first()
@@ -407,7 +420,7 @@ class OddsService:
                 name=league_name,
                 country=country,
                 sport_id=sport.id,
-                league_type='domestic'
+                league_type=league_type
             )
             db.session.add(league)
             db.session.flush()
@@ -415,16 +428,37 @@ class OddsService:
 
         return league
 
+    # Ordered by expected fixture volume so high-value leagues come first.
+    # Free tier: 500 requests/month — each sport key costs 1 request.
+    FOOTBALL_SPORT_KEYS = [
+        'soccer_epl',
+        'soccer_spain_la_liga',
+        'soccer_germany_bundesliga',
+        'soccer_italy_serie_a',
+        'soccer_france_ligue_one',
+        'soccer_uefa_champs_league',
+        'soccer_uefa_europa_league',
+        'soccer_netherlands_eredivisie',
+        'soccer_portugal_primeira_liga',
+        'soccer_england_championship',
+        'soccer_scotland_premiership',
+        'soccer_belgium_first_div',
+        'soccer_turkey_super_league',
+        'soccer_usa_mls',
+        'soccer_mexico_ligamx',
+        'soccer_brazil_campeonato',
+        'soccer_argentina_primera_division',
+        'soccer_conmebol_copa_libertadores',
+    ]
+
     def ingest_football_odds(self):
-        """Ingest odds for EPL and other football leagues."""
+        """Ingest odds for all supported football leagues."""
         total = 0
-
-        # EPL
-        total += self.ingest_odds_for_sport('soccer_epl')
-
-        # La Liga
-        total += self.ingest_odds_for_sport('soccer_spain_la_liga')
-
+        for sport_key in self.FOOTBALL_SPORT_KEYS:
+            count = self.ingest_odds_for_sport(sport_key)
+            if count:
+                logger.info(f'  {sport_key}: {count} odds records')
+            total += count
         return total
 
     def ingest_basketball_odds(self):

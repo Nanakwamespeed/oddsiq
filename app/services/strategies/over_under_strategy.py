@@ -1,8 +1,11 @@
 """Over/Under goals prediction strategy."""
 import logging
 from .base_market_strategy import BaseMarketStrategy
+from ..prediction_engine import FootballPredictionEngine, poisson_cdf
 
 logger = logging.getLogger(__name__)
+
+_engine = FootballPredictionEngine()
 
 
 class OverUnderStrategy(BaseMarketStrategy):
@@ -31,39 +34,18 @@ class OverUnderStrategy(BaseMarketStrategy):
 
     def calculate_expected_goals(self, fixture):
         """
-        Calculate expected total goals using team statistics.
-
-        Formula:
-        - Home expected = (home_avg_scored * away_avg_conceded) / league_avg
-        - Away expected = (away_avg_scored * home_avg_conceded) / league_avg
-        - Total = home_expected + away_expected
-
-        Also applies home advantage factor.
+        Calculate expected goals via the Poisson engine (attack/defense ratings
+        normalized against league baselines with home advantage).
         """
-        home_stats = self.get_team_stats(fixture.home_team_id)
-        away_stats = self.get_team_stats(fixture.away_team_id)
-
-        # Get averages
-        home_avg_scored = home_stats.avg_goals_scored or 1.3
-        home_avg_conceded = home_stats.avg_goals_conceded or 1.3
-        away_avg_scored = away_stats.avg_goals_scored or 1.1
-        away_avg_conceded = away_stats.avg_goals_conceded or 1.3
-
-        # Calculate expected goals using attack × defense model
-        home_expected = (home_avg_scored * away_avg_conceded) / self.DEFAULT_LEAGUE_AVG
-        away_expected = (away_avg_scored * home_avg_conceded) / self.DEFAULT_LEAGUE_AVG
-
-        # Apply slight home boost
-        home_expected *= 1.1
-
-        total_expected = home_expected + away_expected
-
+        lambda_home, lambda_away = _engine.expected_goals(
+            fixture.home_team_id, fixture.away_team_id
+        )
         return {
-            'expected_total': total_expected,
-            'home_expected': home_expected,
-            'away_expected': away_expected,
-            'home_stats': home_stats,
-            'away_stats': away_stats
+            'expected_total': lambda_home + lambda_away,
+            'home_expected': lambda_home,
+            'away_expected': lambda_away,
+            'home_stats': self.get_team_stats(fixture.home_team_id),
+            'away_stats': self.get_team_stats(fixture.away_team_id),
         }
 
     def calculate_prediction(self, fixture, line_value=2.5, outcome=None, **kwargs):
@@ -84,25 +66,23 @@ class OverUnderStrategy(BaseMarketStrategy):
         goals_data = self.calculate_expected_goals(fixture)
         expected_total = goals_data['expected_total']
 
-        # Calculate distance from line
-        distance = expected_total - line_value
+        # Exact Poisson probability: P(total goals > line) = 1 - P(X ≤ floor(line))
+        # For half-ball lines (0.5, 1.5 …) floor == int cast is exact.
+        p_over = 1.0 - poisson_cdf(int(line_value), expected_total)
+        p_under = 1.0 - p_over
 
-        # Calculate over probability
-        over_confidence = 0.50 + (distance * 0.12)
-
-        # Factor in historical over/under rates
+        # Optional blend with historical over-rates if available
         home_stats = goals_data['home_stats']
         away_stats = goals_data['away_stats']
-
         if hasattr(home_stats, 'get_over_percentage'):
             home_over_pct = home_stats.get_over_percentage(line_value) / 100
             away_over_pct = away_stats.get_over_percentage(line_value) / 100
             historical_factor = (home_over_pct + away_over_pct) / 2
-            over_confidence = (over_confidence * 0.7) + (historical_factor * 0.3)
+            p_over = p_over * 0.70 + historical_factor * 0.30
+            p_under = 1.0 - p_over
 
-        # Cap confidence between 0.35 and 0.85
-        over_confidence = max(0.35, min(0.85, over_confidence))
-        under_confidence = max(0.35, min(0.85, 1 - over_confidence + 0.35))  # Inverse
+        over_confidence = max(0.25, min(0.90, p_over))
+        under_confidence = max(0.25, min(0.90, p_under))
 
         # If specific outcome requested, return that
         if outcome == 'over':
@@ -161,22 +141,21 @@ class OverUnderStrategy(BaseMarketStrategy):
         """
         goals_data = self.calculate_expected_goals(fixture)
         expected_total = goals_data['expected_total']
-        distance = expected_total - line_value
 
-        # Calculate confidences
-        over_confidence = 0.50 + (distance * 0.12)
+        p_over = 1.0 - poisson_cdf(int(line_value), expected_total)
+        p_under = 1.0 - p_over
 
         home_stats = goals_data['home_stats']
         away_stats = goals_data['away_stats']
-
         if hasattr(home_stats, 'get_over_percentage'):
             home_over_pct = home_stats.get_over_percentage(line_value) / 100
             away_over_pct = away_stats.get_over_percentage(line_value) / 100
             historical_factor = (home_over_pct + away_over_pct) / 2
-            over_confidence = (over_confidence * 0.7) + (historical_factor * 0.3)
+            p_over = p_over * 0.70 + historical_factor * 0.30
+            p_under = 1.0 - p_over
 
-        over_confidence = max(0.35, min(0.85, over_confidence))
-        under_confidence = max(0.35, min(0.85, 1 - over_confidence + 0.35))
+        over_confidence = max(0.25, min(0.90, p_over))
+        under_confidence = max(0.25, min(0.90, p_under))
 
         return [
             {

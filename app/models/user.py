@@ -12,9 +12,17 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(255), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(255), nullable=False)
+    first_name = db.Column(db.String(100), nullable=True)
+    last_name = db.Column(db.String(100), nullable=True)
+    other_names = db.Column(db.String(100), nullable=True)
     role = db.Column(db.Enum('free', 'premium', 'admin', name='user_role'), default='free', nullable=False)
     subscription_expires_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    @property
+    def full_name(self):
+        parts = [self.first_name, self.other_names, self.last_name]
+        return ' '.join(p for p in parts if p) or None
 
     # Relationships
     refresh_tokens = db.relationship('RefreshToken', backref='user', lazy='dynamic', cascade='all, delete-orphan')
@@ -51,6 +59,10 @@ class User(db.Model):
         """Serialize user to dictionary."""
         data = {
             'id': self.id,
+            'first_name': self.first_name,
+            'last_name': self.last_name,
+            'other_names': self.other_names,
+            'full_name': self.full_name,
             'role': self.role,
             'is_premium': self.is_premium(),
             'subscription_expires_at': self.subscription_expires_at.isoformat() if self.subscription_expires_at else None,

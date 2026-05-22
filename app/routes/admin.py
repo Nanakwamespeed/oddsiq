@@ -1,5 +1,5 @@
 """Admin routes for managing predictions, users, and guides."""
-from flask import Blueprint, request
+from flask import Blueprint, request, current_app
 from flask_jwt_extended import jwt_required
 from ..extensions import db
 from ..models.user import User
@@ -11,6 +11,49 @@ from ..utils.decorators import admin_required
 from ..utils.helpers import json_error, json_success
 
 admin_bp = Blueprint('admin', __name__)
+
+
+# --- Data Ingestion Triggers ---
+
+@admin_bp.route('/ingest', methods=['POST'])
+@admin_required
+def trigger_ingestion():
+    """Manually trigger data ingestion and prediction generation."""
+    from ..services.football_service import FootballService
+    from ..services.basketball_service import BasketballService
+    from ..services.tennis_service import TennisService
+    from ..services.prediction_service import PredictionService
+
+    results = {}
+
+    try:
+        fs = FootballService()
+        fs.ingest_leagues()
+        results['football_fixtures'] = fs.ingest_fixtures(days_ahead=7)
+    except Exception as e:
+        results['football_fixtures_error'] = str(e)
+
+    try:
+        bs = BasketballService()
+        bs.ingest_leagues()
+        results['basketball_fixtures'] = bs.ingest_fixtures(days_ahead=7)
+    except Exception as e:
+        results['basketball_fixtures_error'] = str(e)
+
+    try:
+        ts = TennisService()
+        ts.ingest_leagues()
+        results['tennis_fixtures'] = ts.ingest_fixtures(days_ahead=7)
+    except Exception as e:
+        results['tennis_fixtures_error'] = str(e)
+
+    try:
+        ps = PredictionService()
+        results['predictions_generated'] = ps.generate_predictions_for_upcoming()
+    except Exception as e:
+        results['predictions_error'] = str(e)
+
+    return json_success(data=results, message='Ingestion complete')
 
 
 # --- Prediction Management ---

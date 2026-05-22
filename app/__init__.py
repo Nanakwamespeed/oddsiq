@@ -51,8 +51,10 @@ def create_app(config_name=None):
     # Configure JWT callbacks
     configure_jwt(app)
 
-    # Start scheduler (only in non-testing environment)
-    if not app.config.get('TESTING'):
+    # Start scheduler — disabled on Vercel (serverless, no persistent process)
+    # Cron jobs are handled via Vercel Cron + /api/cron/* endpoints instead
+    on_vercel = os.getenv('VERCEL') == '1'
+    if not app.config.get('TESTING') and not on_vercel:
         start_scheduler(app)
 
     # Create tables if they don't exist
@@ -165,6 +167,9 @@ def register_blueprints(app):
     app.register_blueprint(payments_bp, url_prefix='/api/payments')
     app.register_blueprint(admin_bp, url_prefix='/api/admin')
     app.register_blueprint(market_predictions_bp, url_prefix='/api/markets')
+
+    from .routes.cron import cron_bp
+    app.register_blueprint(cron_bp, url_prefix='/api/cron')
 
 
 def register_request_logging(app):

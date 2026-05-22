@@ -94,7 +94,15 @@ def get_leagues_by_sport(sport_name):
     if not sport:
         return json_error('Sport not found', 404)
 
-    leagues = League.query.filter_by(sport_id=sport.id).order_by(League.name).all()
+    all_leagues = League.query.filter_by(sport_id=sport.id).order_by(League.name).all()
+
+    # Deduplicate by name (duplicate rows can appear from repeated ingestion runs)
+    seen = set()
+    leagues = []
+    for league in all_leagues:
+        if league.name not in seen:
+            seen.add(league.name)
+            leagues.append(league)
 
     return json_success(data={
         'sport': sport.to_dict(),

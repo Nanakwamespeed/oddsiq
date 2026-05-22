@@ -3,11 +3,13 @@ from datetime import datetime
 from flask import Blueprint, request
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt, verify_jwt_in_request
 from ..extensions import db, cache
+from sqlalchemy.orm import aliased
 from ..models.prediction import Prediction
 from ..models.fixture import Fixture
 from ..models.league import League
 from ..models.sport import Sport
 from ..models.user import User
+from ..models.team import Team
 from ..utils.decorators import premium_required
 from ..utils.helpers import json_error, json_success, get_date_range, parse_sport_filter
 
@@ -213,6 +215,9 @@ def get_prediction(prediction_id):
 
     prediction = Prediction.query.get(prediction_id)
     if not prediction:
+        # Treat as fixture_id for stable daily links (prediction IDs change on regeneration)
+        prediction = Prediction.query.filter_by(fixture_id=prediction_id).order_by(Prediction.id.desc()).first()
+    if not prediction:
         return json_error('Prediction not found', 404)
 
     # Check if premium prediction and user doesn't have access
@@ -346,8 +351,8 @@ def get_prediction(prediction_id):
         'away_form_score': round(away_form_score * 100, 1),
         'home_h2h_score': round(home_h2h_score * 100, 1),
         'away_h2h_score': round(away_h2h_score * 100, 1),
-        'home_advantage': 60.0,  # 60% home advantage factor
-        'away_advantage': 40.0,  # 40% for away team
+        'home_advantage': 60.0,
+        'away_advantage': 40.0,
         'allows_draws': allows_draws,
         'factors': [
             {'name': 'Recent Form', 'weight': '30%', 'description': 'Performance in last 5 matches'},
@@ -356,6 +361,109 @@ def get_prediction(prediction_id):
             {'name': 'Other Factors', 'weight': '30%', 'description': 'Base probability and variance'}
         ]
     }
+
+    # ── Poisson expected goals (λ) ──────────────────────────────
+    lambda_home = lambda_away = None
+    if home_team and away_team:
+        try:
+            from ..services.prediction_engine import FootballPredictionEngine
+            _pe = FootballPredictionEngine()
+            lh, la = _pe.expected_goals(home_team.id, away_team.id)
+            lambda_home = round(lh, 2)
+            lambda_away = round(la, 2)
+        except Exception:
+            pass
+
+    analysis['lambda_home'] = lambda_home
+    analysis['lambda_away'] = lambda_away
+
+    # ── Auto-generated explanation ──────────────────────────────
+    auto_explanation = None
+    if lambda_home is not None and lambda_away is not None:
+        home_name = home_team.name if home_team else 'Home'
+        away_name = away_team.name if away_team else 'Away'
+        total_xg = round(lambda_home + lambda_away, 1)
+
+        if lambda_home > lambda_away * 1.35:
+            xg_line = f"Strong home attack expected ({lambda_home} xG vs {lambda_away} xG away)."
+        elif lambda_away > lambda_home * 1.35:
+            xg_line = f"Away side projects as the sharper attack ({lambda_away} xG vs {lambda_home} xG)."
+        elif total_xg >= 3.0:
+            xg_line = f"High-scoring game likely — model projects {total_xg} total expected goals."
+        elif total_xg <= 1.8:
+            xg_line = f"Tight, low-scoring affair expected — only {total_xg} combined xG projected."
+        else:
+            xg_line = f"Closely contested match — {lambda_home} vs {lambda_away} expected goals."
+
+        form_parts = []
+        if home_form_score > 0.72:
+            form_parts.append(f"{home_name} arrive in excellent form")
+        elif home_form_score < 0.28:
+            form_parts.append(f"{home_name} are struggling for form")
+        if away_form_score > 0.72:
+            form_parts.append(f"{away_name} hitting their stride recently")
+        elif away_form_score < 0.28:
+            form_parts.append(f"{away_name} are in poor recent form")
+
+        h2h_line = ''
+        if len(h2h_records) >= 3:
+            if home_h2h_wins > away_h2h_wins + 1:
+                h2h_line = (f" {home_name} have historically dominated this fixture "
+                            f"({home_h2h_wins}W-{h2h_draws}D-{away_h2h_wins}L).")
+            elif away_h2h_wins > home_h2h_wins + 1:
+                h2h_line = (f" {away_name} hold a strong head-to-head edge "
+                            f"({away_h2h_wins}W-{h2h_draws}D-{home_h2h_wins}L).")
+
+        auto_explanation = xg_line
+        if form_parts:
+            auto_explanation += ' ' + '. '.join(form_parts) + '.'
+        auto_explanation += h2h_line
+
+    analysis['auto_explanation'] = auto_explanation
+
+    # ── Historical calibration for this confidence band ─────────
+    calibration = None
+    try:
+        from ..models.accuracy_log import AccuracyLog
+        band_lo = max(0.0, prediction.confidence_score - 0.05)
+        band_hi = min(1.0, prediction.confidence_score + 0.05)
+        band_q = db.session.query(AccuracyLog).join(Prediction, AccuracyLog.prediction_id == Prediction.id).filter(
+            Prediction.confidence_score.between(band_lo, band_hi)
+        )
+        band_total = band_q.count()
+        band_correct = band_q.filter(AccuracyLog.was_correct == True).count()
+        if band_total >= 10:
+            calibration = {
+                'band': f"{round(band_lo * 100)}-{round(band_hi * 100)}%",
+                'total': band_total,
+                'correct': band_correct,
+                'accuracy': round(band_correct / band_total * 100, 1)
+            }
+    except Exception:
+        pass
+
+    analysis['calibration'] = calibration
+
+    # ── Market consensus (de-vigged bookmaker implied probabilities) ──
+    market_consensus = None
+    try:
+        best_row = Odds.query.filter_by(fixture_id=fixture.id).first()
+        if best_row and best_row.home_win_odds and best_row.away_win_odds:
+            inv_h = 1.0 / best_row.home_win_odds
+            inv_d = (1.0 / best_row.draw_odds) if best_row.draw_odds else 0.0
+            inv_a = 1.0 / best_row.away_win_odds
+            total_inv = inv_h + inv_d + inv_a
+            if total_inv > 0:
+                market_consensus = {
+                    'home':  round(inv_h / total_inv * 100, 1),
+                    'draw':  round(inv_d / total_inv * 100, 1) if inv_d else None,
+                    'away':  round(inv_a / total_inv * 100, 1),
+                    'bookmaker': best_row.bookmaker_name,
+                }
+    except Exception:
+        pass
+
+    analysis['market_consensus'] = market_consensus
 
     # Build response
     response_data = {
@@ -409,7 +517,6 @@ def get_prediction(prediction_id):
 
 
 @predictions_bp.route('/top-picks', methods=['GET'])
-# @cache.cached(timeout=300, query_string=True)  # Disabled - cache doesn't account for user premium status
 def get_top_picks():
     """
     Get top predictions by confidence score (public).
@@ -422,10 +529,17 @@ def get_top_picks():
     limit = request.args.get('limit', 3, type=int)
     league_types = parse_league_type_filter(request.args.get('type'))
 
-    # Get predictions ordered by confidence - only upcoming games
+    cache_key = f"top_picks_{limit}_{is_premium}_{request.args.get('type', '')}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    # Get predictions ordered by confidence - today only
+    start_date, end_date = get_date_range('today')
     query = Prediction.query.join(Fixture).join(League).filter(
         Fixture.status == 'upcoming',
-        Fixture.kickoff_at >= datetime.utcnow()
+        Fixture.kickoff_at >= datetime.utcnow(),
+        Fixture.kickoff_at.between(start_date, end_date)
     )
 
     # Apply league type filter
@@ -443,10 +557,64 @@ def get_top_picks():
         add_h2h_and_form_data(pred_data, pred.fixture)
         results.append(pred_data)
 
-    return json_success(data={
+    response = json_success(data={
         'predictions': results,
         'total': len(results)
     })
+    cache.set(cache_key, response, timeout=300)
+    return response
+
+
+@predictions_bp.route('/ticker', methods=['GET'])
+def get_ticker_predictions():
+    """
+    Lightweight ticker feed — all of today's predictions regardless of kickoff time.
+    Single joined query, no H2H/form data. Public, cached 10 min.
+    """
+    cached = cache.get('ticker_today')
+    if cached is not None:
+        return cached
+
+    start_date, end_date = get_date_range('today')
+
+    HomeTeam = aliased(Team, name='ht')
+    AwayTeam = aliased(Team, name='at')
+
+    rows = (
+        db.session.query(
+            Prediction.id,
+            Prediction.predicted_outcome,
+            Prediction.confidence_score,
+            Fixture.kickoff_at,
+            HomeTeam.name.label('home_name'),
+            AwayTeam.name.label('away_name'),
+        )
+        .join(Fixture, Prediction.fixture_id == Fixture.id)
+        .join(HomeTeam, Fixture.home_team_id == HomeTeam.id)
+        .join(AwayTeam, Fixture.away_team_id == AwayTeam.id)
+        .filter(Fixture.kickoff_at.between(start_date, end_date))
+        .order_by(Fixture.kickoff_at)
+        .limit(30)
+        .all()
+    )
+
+    results = [
+        {
+            'id': r.id,
+            'predicted_outcome': r.predicted_outcome,
+            'confidence_score': round(r.confidence_score * 100, 1) if r.confidence_score <= 1 else round(r.confidence_score, 1),
+            'fixture': {
+                'home_team': {'name': r.home_name},
+                'away_team': {'name': r.away_name},
+                'kickoff_at': r.kickoff_at.isoformat() if r.kickoff_at else None,
+            }
+        }
+        for r in rows
+    ]
+
+    response = json_success(data={'predictions': results, 'total': len(results)})
+    cache.set('ticker_today', response, timeout=600)
+    return response
 
 
 @predictions_bp.route('/today', methods=['GET'])

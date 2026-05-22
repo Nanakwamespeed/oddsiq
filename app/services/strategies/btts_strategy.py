@@ -1,8 +1,12 @@
 """Both Teams To Score (BTTS) prediction strategy."""
+import math
 import logging
 from .base_market_strategy import BaseMarketStrategy
+from ..prediction_engine import FootballPredictionEngine
 
 logger = logging.getLogger(__name__)
+
+_engine = FootballPredictionEngine()
 
 
 class BTTSStrategy(BaseMarketStrategy):
@@ -28,61 +32,35 @@ class BTTSStrategy(BaseMarketStrategy):
 
     def calculate_btts_probability(self, fixture):
         """
-        Calculate BTTS probability.
+        Calculate BTTS probability using Poisson expected-goals model.
 
-        BTTS Yes = P(Home scores) × P(Away scores)
+        P(home scores ≥ 1) = 1 − e^{−λ_home}
+        P(away scores ≥ 1) = 1 − e^{−λ_away}
+        P(BTTS) = P(home scores) × P(away scores)
 
-        Where:
-        - P(Home scores) = (100 - failed_to_score_rate) / 100
-        - P(Away scores) adjusted for opponent defensive strength
+        Optionally blended with historical BTTS rates when available.
         """
+        lambda_home, lambda_away = _engine.expected_goals(
+            fixture.home_team_id, fixture.away_team_id
+        )
+
+        p_home_scores = 1.0 - math.exp(-lambda_home)
+        p_away_scores = 1.0 - math.exp(-lambda_away)
+        btts_probability = p_home_scores * p_away_scores
+
+        # Optional blend with historical BTTS rates
         home_stats = self.get_team_stats(fixture.home_team_id)
         away_stats = self.get_team_stats(fixture.away_team_id)
-
-        # Home team scoring probability
-        if hasattr(home_stats, 'get_scoring_rate'):
-            home_scoring_rate = home_stats.get_scoring_rate() / 100
-        else:
-            home_scoring_rate = 0.70  # Default
-
-        # Away team scoring probability
-        if hasattr(away_stats, 'get_scoring_rate'):
-            away_scoring_rate = away_stats.get_scoring_rate() / 100
-        else:
-            away_scoring_rate = 0.65  # Default (slightly lower for away)
-
-        # Factor in opponent's defensive record
-        if hasattr(away_stats, 'get_clean_sheet_rate'):
-            away_clean_sheet_rate = away_stats.get_clean_sheet_rate() / 100
-        else:
-            away_clean_sheet_rate = 0.30
-
-        if hasattr(home_stats, 'get_clean_sheet_rate'):
-            home_clean_sheet_rate = home_stats.get_clean_sheet_rate() / 100
-        else:
-            home_clean_sheet_rate = 0.35  # Home teams keep more clean sheets
-
-        # Adjust scoring probability based on opponent defense
-        # If opponent keeps many clean sheets, reduce scoring probability
-        home_vs_away_defense = home_scoring_rate * (1 - away_clean_sheet_rate * 0.5)
-        away_vs_home_defense = away_scoring_rate * (1 - home_clean_sheet_rate * 0.5)
-
-        # BTTS probability = both teams score
-        btts_probability = home_vs_away_defense * away_vs_home_defense
-
-        # Also consider historical BTTS rates
-        if hasattr(home_stats, 'btts_percentage') and home_stats.matches_played > 0:
+        if hasattr(home_stats, 'btts_percentage') and getattr(home_stats, 'matches_played', 0) > 0:
             home_btts_rate = home_stats.btts_percentage / 100
-            away_btts_rate = away_stats.btts_percentage / 100 if hasattr(away_stats, 'btts_percentage') else 0.5
+            away_btts_rate = getattr(away_stats, 'btts_percentage', 50) / 100
             historical_btts = (home_btts_rate + away_btts_rate) / 2
-
-            # Blend calculated and historical
-            btts_probability = (btts_probability * 0.6) + (historical_btts * 0.4)
+            btts_probability = btts_probability * 0.65 + historical_btts * 0.35
 
         return {
             'btts_probability': btts_probability,
-            'home_scoring_rate': home_vs_away_defense,
-            'away_scoring_rate': away_vs_home_defense
+            'home_scoring_rate': p_home_scores,
+            'away_scoring_rate': p_away_scores,
         }
 
     def _calculate_confidence_from_probability(self, probability, outcome):

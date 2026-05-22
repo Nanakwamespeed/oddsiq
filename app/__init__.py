@@ -52,14 +52,17 @@ def create_app(config_name=None):
     configure_jwt(app)
 
     # Start scheduler — disabled on Vercel (serverless, no persistent process)
-    # Cron jobs are handled via Vercel Cron + /api/cron/* endpoints instead
     on_vercel = os.getenv('VERCEL') == '1'
     if not app.config.get('TESTING') and not on_vercel:
         start_scheduler(app)
 
-    # Create tables if they don't exist
-    with app.app_context():
-        db.create_all()
+    # Only create tables locally — on Vercel tables already exist on Neon
+    if not on_vercel and not app.config.get('TESTING'):
+        with app.app_context():
+            try:
+                db.create_all()
+            except Exception as e:
+                logger.warning(f'db.create_all() skipped: {e}')
 
     # Register CLI commands
     register_cli_commands(app)
@@ -170,6 +173,15 @@ def register_blueprints(app):
 
     from .routes.cron import cron_bp
     app.register_blueprint(cron_bp, url_prefix='/api/cron')
+
+    @app.route('/api/health')
+    def health():
+        try:
+            db.session.execute(db.text('SELECT 1'))
+            db_status = 'ok'
+        except Exception as e:
+            db_status = str(e)
+        return jsonify({'status': 'ok', 'db': db_status})
 
 
 def register_request_logging(app):

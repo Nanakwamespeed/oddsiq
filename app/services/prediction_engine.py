@@ -39,7 +39,7 @@ _DC_RHO         = -0.10  # Dixon-Coles low-score correlation (empirically ~-0.1)
 _DRAW_UPSCALE   = 1.08   # Poisson underestimates draws by ~8%; empirical correction
 _ODDS_WEIGHT    = 0.30   # blending weight for bookmaker-implied probs
 _H2H_MAX_SHIFT  = 0.04   # max probability shift from H2H history
-_MIN_FORM_GAMES = 3      # fall back to baseline below this threshold
+_MIN_FORM_GAMES = 1      # fall back to baseline below this threshold
 _VALUE_EDGE_MIN = 0.04   # model_prob − market_implied to flag a value bet
 
 

@@ -48,8 +48,13 @@ def ingest():
         results['odds_key_set'] = bool(odds_key)
         results['odds_key_len'] = len(odds_key)
         svc = OddsService()
-        active_sports = svc.get_available_sports() or []
-        results['active_sports'] = [s['key'] for s in active_sports if s.get('active')] if isinstance(active_sports, list) else str(active_sports)[:200]
+        # Test one league in detail
+        test_key = 'soccer_epl'
+        raw = svc._make_request(f'sports/{test_key}/odds', {'regions': 'eu', 'markets': 'h2h,totals', 'oddsFormat': 'decimal'})
+        results['epl_events'] = len(raw) if isinstance(raw, list) else str(raw)[:200]
+        if isinstance(raw, list) and raw:
+            e = raw[0]
+            results['epl_sample'] = {'home': e.get('home_team'), 'away': e.get('away_team'), 'bookmakers': len(e.get('bookmakers', []))}
         results['odds_football'] = svc.ingest_football_odds()
         results['odds_basketball'] = svc.ingest_basketball_odds()
     except Exception as e:

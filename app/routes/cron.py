@@ -49,12 +49,22 @@ def ingest():
         results['odds_key_len'] = len(odds_key)
         svc = OddsService()
         # Test one league in detail
+        import requests as _req
         test_key = 'soccer_epl'
-        raw = svc._make_request(f'sports/{test_key}/odds', {'regions': 'eu', 'markets': 'h2h,totals', 'oddsFormat': 'decimal'})
-        results['epl_events'] = len(raw) if isinstance(raw, list) else str(raw)[:200]
-        if isinstance(raw, list) and raw:
-            e = raw[0]
-            results['epl_sample'] = {'home': e.get('home_team'), 'away': e.get('away_team'), 'bookmakers': len(e.get('bookmakers', []))}
+        try:
+            _url = f'https://api.the-odds-api.com/v4/sports/{test_key}/odds'
+            _resp = _req.get(_url, params={'apiKey': odds_key, 'regions': 'eu', 'markets': 'h2h', 'oddsFormat': 'decimal'}, timeout=8)
+            results['epl_status'] = _resp.status_code
+            if _resp.status_code == 200:
+                raw = _resp.json()
+                results['epl_events'] = len(raw)
+                if raw:
+                    e = raw[0]
+                    results['epl_sample'] = {'home': e.get('home_team'), 'away': e.get('away_team'), 'bookmakers': len(e.get('bookmakers', []))}
+            else:
+                results['epl_error'] = _resp.text[:300]
+        except Exception as _e:
+            results['epl_error'] = str(_e)[:200]
         results['odds_football'] = svc.ingest_football_odds()
         results['odds_basketball'] = svc.ingest_basketball_odds()
     except Exception as e:

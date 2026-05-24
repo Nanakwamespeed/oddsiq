@@ -168,10 +168,12 @@ def get_predictions():
     # Order by kickoff time
     query = query.order_by(Fixture.kickoff_at)
 
+    total_available = query.count()
+
     # Free users limited to 3 results
     if not is_premium:
         predictions = query.limit(3).all()
-        total = min(query.count(), 3)
+        total = 3
     else:
         # Paginate for premium users
         pagination = query.paginate(page=page, per_page=per_page, error_out=False)
@@ -189,6 +191,7 @@ def get_predictions():
     return json_success(data={
         'predictions': results,
         'total': total,
+        'total_available': total_available,
         'is_premium_user': is_premium
     })
 

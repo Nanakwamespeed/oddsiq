@@ -48,6 +48,8 @@ def ingest():
         results['odds_key_set'] = bool(odds_key)
         results['odds_key_len'] = len(odds_key)
         svc = OddsService()
+        active_sports = svc.get_available_sports() or []
+        results['active_sports'] = [s['key'] for s in active_sports if s.get('active')] if isinstance(active_sports, list) else str(active_sports)[:200]
         results['odds_football'] = svc.ingest_football_odds()
         results['odds_basketball'] = svc.ingest_basketball_odds()
     except Exception as e:

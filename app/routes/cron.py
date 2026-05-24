@@ -43,28 +43,7 @@ def ingest():
 
     try:
         from ..services.odds_service import OddsService
-        from flask import current_app
-        odds_key = current_app.config.get('THE_ODDS_API_KEY', '')
-        results['odds_key_set'] = bool(odds_key)
-        results['odds_key_len'] = len(odds_key)
         svc = OddsService()
-        # Test one league in detail
-        import requests as _req
-        test_key = 'soccer_epl'
-        try:
-            _url = f'https://api.the-odds-api.com/v4/sports/{test_key}/odds'
-            _resp = _req.get(_url, params={'apiKey': odds_key, 'regions': 'eu', 'markets': 'h2h', 'oddsFormat': 'decimal'}, timeout=8)
-            results['epl_status'] = _resp.status_code
-            if _resp.status_code == 200:
-                raw = _resp.json()
-                results['epl_events'] = len(raw)
-                if raw:
-                    e = raw[0]
-                    results['epl_sample'] = {'home': e.get('home_team'), 'away': e.get('away_team'), 'bookmakers': len(e.get('bookmakers', []))}
-            else:
-                results['epl_error'] = _resp.text[:300]
-        except Exception as _e:
-            results['epl_error'] = str(_e)[:200]
         results['odds_football'] = svc.ingest_football_odds()
         results['odds_basketball'] = svc.ingest_basketball_odds()
     except Exception as e:

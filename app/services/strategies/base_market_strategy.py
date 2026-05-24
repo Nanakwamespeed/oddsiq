@@ -152,10 +152,6 @@ class BaseMarketStrategy(ABC):
                 predicted_outcome=predicted_outcome
             ).first()
 
-            if existing:
-                logger.debug(f"Prediction already exists for fixture {fixture.id} market {self.market_type}")
-                return existing
-
             # Detect value bet
             value_bet_result = self.detect_value_bet(
                 fixture.id,
@@ -163,6 +159,14 @@ class BaseMarketStrategy(ABC):
                 model_probability,
                 line_value
             )
+
+            if existing:
+                existing.confidence_score = confidence_score
+                existing.model_probability = model_probability
+                existing.is_value_bet = value_bet_result['is_value_bet']
+                existing.value_edge = value_bet_result['edge']
+                existing.is_premium = is_premium or confidence_score >= 0.75
+                return existing
 
             # Create prediction
             prediction = MarketPrediction(
@@ -228,10 +232,6 @@ class BaseMarketStrategy(ABC):
                     predicted_outcome=predicted_outcome
                 ).first()
 
-                if existing:
-                    predictions.append(existing)
-                    continue
-
                 # Detect value bet
                 value_bet_result = self.detect_value_bet(
                     fixture.id,
@@ -239,6 +239,15 @@ class BaseMarketStrategy(ABC):
                     model_probability,
                     line_value
                 )
+
+                if existing:
+                    existing.confidence_score = confidence_score
+                    existing.model_probability = model_probability
+                    existing.is_value_bet = value_bet_result['is_value_bet']
+                    existing.value_edge = value_bet_result['edge']
+                    existing.is_premium = is_premium or confidence_score >= 0.75
+                    predictions.append(existing)
+                    continue
 
                 # Create prediction
                 prediction = MarketPrediction(

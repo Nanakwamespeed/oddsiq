@@ -43,6 +43,10 @@ def ingest():
 
     try:
         from ..services.odds_service import OddsService
+        from flask import current_app
+        odds_key = current_app.config.get('THE_ODDS_API_KEY', '')
+        results['odds_key_set'] = bool(odds_key)
+        results['odds_key_len'] = len(odds_key)
         svc = OddsService()
         results['odds_football'] = svc.ingest_football_odds()
         results['odds_basketball'] = svc.ingest_basketball_odds()

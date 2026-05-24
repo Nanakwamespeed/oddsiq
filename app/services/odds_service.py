@@ -34,29 +34,38 @@ class OddsService:
     }
 
     def __init__(self):
-        self.api_key = current_app.config['THE_ODDS_API_KEY']
+        self.api_keys = [k for k in [
+            current_app.config.get('THE_ODDS_API_KEY', ''),
+            current_app.config.get('THE_ODDS_API_KEY_2', ''),
+        ] if k]
         self.base_url = current_app.config['THE_ODDS_API_BASE_URL']
         self.affiliate_code = current_app.config.get('AFFILIATE_CODE', 'oddsiq')
 
     def _make_request(self, endpoint, params=None):
-        """Make a request to The Odds API."""
-        if not self.api_key:
-            logger.warning('The Odds API key not configured')
+        """Make a request to The Odds API, falling back to secondary key on quota exhaustion."""
+        if not self.api_keys:
+            logger.warning('No Odds API keys configured')
             return None
 
         if params is None:
             params = {}
 
-        params['apiKey'] = self.api_key
+        for key in self.api_keys:
+            params['apiKey'] = key
+            try:
+                url = f'{self.base_url}/{endpoint}'
+                response = requests.get(url, params=params, timeout=30)
+                if response.status_code == 401:
+                    logger.warning('Odds API key exhausted or invalid, trying next key')
+                    continue
+                response.raise_for_status()
+                return response.json()
+            except requests.RequestException as e:
+                logger.error(f'The Odds API request failed: {e}')
+                return None
 
-        try:
-            url = f'{self.base_url}/{endpoint}'
-            response = requests.get(url, params=params, timeout=30)
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            logger.error(f'The Odds API request failed: {e}')
-            return None
+        logger.error('All Odds API keys exhausted or failed')
+        return None
 
     def _get_affiliate_url(self, bookmaker_name):
         """Get affiliate URL for a bookmaker."""

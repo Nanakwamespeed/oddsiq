@@ -49,6 +49,7 @@ class Config:
     ALLSPORTS_API_KEY = os.getenv('ALLSPORTS_API_KEY', '')
 
     THE_ODDS_API_KEY = os.getenv('THE_ODDS_API_KEY', '')
+    THE_ODDS_API_KEY_2 = os.getenv('THE_ODDS_API_KEY_2', '')
     THE_ODDS_API_BASE_URL = 'https://api.the-odds-api.com/v4'
 
     API_TENNIS_KEY = os.getenv('API_TENNIS_KEY', '')

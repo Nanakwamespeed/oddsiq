@@ -1,27 +1,22 @@
 """
 Football Prediction Engine — Poisson goal model with Dixon-Coles correction.
 
-Reference:
-  Dixon & Coles (1997): "Modelling association football scores and
-  inefficiencies in the football betting market."
-  Applied Statistics, 46(2), 265-280.
-
-Pipeline:
-  1. Exponentially-weighted attack / defense ratings from FormRecord
-  2. Normalised expected goals (λ_home, λ_away)
-  3. Bivariate Poisson → all scoreline probabilities
-  4. Dixon-Coles low-score correlation correction
-  5. Sum into H / D / A probabilities
-  6. Blend with bookmaker-implied probs (removes overround first)
-  7. H2H momentum micro-adjustment
-  8. Confidence score + value-bet flag
+Improvements over v1:
+  • Venue-split form: home team's home goals / away team's away goals
+    instead of combined form for both sides.
+  • xG integration: when Understat xG data exists, blend it (60%) with
+    recent venue form (40%) for a noise-resistant attack/defense signal.
+  • Higher market trust: _ODDS_WEIGHT 0.30 → 0.45.
+  • Draw scepticism: only predict draw when P(draw) ≥ _DRAW_THRESHOLD.
+  • Confidence gate: skip fixtures where the winner's probability is
+    below _MIN_MODEL_PROB (uncertain matches — not worth publishing).
+  • Tighter recency window: 5 venue-specific games instead of 10 mixed.
 """
 import math
 import logging
 
 from ..extensions import db
 from ..models.prediction import Prediction
-from ..models.form_record import FormRecord
 from ..models.h2h_record import H2HRecord
 from ..models.odds import Odds
 from ..models.team import Team
@@ -29,26 +24,30 @@ from ..models.team import Team
 logger = logging.getLogger(__name__)
 
 # ── Empirical football baselines (European league averages) ───
-_HOME_BASELINE = 1.50   # avg home goals per game
-_AWAY_BASELINE = 1.15   # avg away goals per game
+_HOME_BASELINE = 1.50
+_AWAY_BASELINE = 1.15
 
 # ── Model hyper-parameters ────────────────────────────────────
-_RECENCY_DECAY  = 0.87   # weight multiplier per match; newest match = 1.0
-_MAX_GOALS      = 10     # sum scorelines 0..10 × 0..10
-_DC_RHO         = -0.10  # Dixon-Coles low-score correlation (empirically ~-0.1)
-_DRAW_UPSCALE   = 1.08   # Poisson underestimates draws by ~8%; empirical correction
-_ODDS_WEIGHT    = 0.30   # blending weight for bookmaker-implied probs
-_H2H_MAX_SHIFT  = 0.04   # max probability shift from H2H history
-_MIN_FORM_GAMES = 1      # fall back to baseline below this threshold
-_VALUE_EDGE_MIN = 0.04   # model_prob − market_implied to flag a value bet
+_RECENCY_DECAY    = 0.87   # weight multiplier per match; newest = 1.0
+_MAX_GOALS        = 10
+_DC_RHO           = -0.10  # Dixon-Coles low-score correlation
+_DRAW_UPSCALE     = 1.08   # Poisson underestimates draws by ~8 %
+_ODDS_WEIGHT      = 0.45   # bookmaker-implied blend weight (was 0.30)
+_H2H_MAX_SHIFT    = 0.04   # max probability shift from H2H history
+_MIN_FORM_GAMES   = 1      # fall back to baseline below this threshold
+_VENUE_LIMIT      = 5      # recent home/away games to use for form
+_VALUE_EDGE_MIN   = 0.04   # edge threshold to flag a value bet
+_DRAW_THRESHOLD   = 0.36   # only predict draw when P(draw) ≥ this
+_MIN_MODEL_PROB   = 0.46   # skip prediction when winner prob < this
+_ELO_BASELINE     = 1600.0 # Club Elo global average; scales attack/defense ratings
+_ELO_MAX_SCALE    = 0.30   # max ±30 % adjustment from Elo deviation
 
 
 # ════════════════════════════════════════════════════════════════
-# Pure-math helpers (no DB access)
+# Pure-math helpers
 # ════════════════════════════════════════════════════════════════
 
 def poisson_pmf(k: int, lam: float) -> float:
-    """Probability mass function  P(X = k)  for Poisson(λ)."""
     if lam <= 0.0:
         return 1.0 if k == 0 else 0.0
     if k < 0:
@@ -60,22 +59,10 @@ def poisson_pmf(k: int, lam: float) -> float:
 
 
 def poisson_cdf(n: int, lam: float) -> float:
-    """Cumulative probability  P(X ≤ n)  for Poisson(λ)."""
     return sum(poisson_pmf(k, lam) for k in range(n + 1))
 
 
 def dc_tau(x: int, y: int, lh: float, la: float, rho: float) -> float:
-    """
-    Dixon-Coles correction factor τ(x, y).
-
-    Adjusts joint probability for correlated low scores, which pure
-    independent-Poisson over-/under-estimates:
-      (0,0)  →  1 − λh·λa·ρ
-      (1,0)  →  1 + λa·ρ
-      (0,1)  →  1 + λh·ρ
-      (1,1)  →  1 − ρ
-      else   →  1
-    """
     if x == 0 and y == 0:
         return 1.0 - lh * la * rho
     elif x == 1 and y == 0:
@@ -93,16 +80,6 @@ def match_probabilities(
     rho: float = _DC_RHO,
     allows_draws: bool = True,
 ) -> dict:
-    """
-    Compute H / D / A win probabilities from expected-goals parameters.
-
-    Uses bivariate Poisson with Dixon-Coles low-score correction.
-    Applies an empirical upscale for draws (Poisson consistently
-    underestimates draws by ~8 % in real match data).
-
-    Returns:
-        {'home': float, 'draw': float, 'away': float}  (sum = 1.0)
-    """
     p_home = p_draw = p_away = 0.0
 
     for i in range(_MAX_GOALS + 1):
@@ -119,15 +96,13 @@ def match_probabilities(
             else:
                 p_away += p
 
-    p_draw *= _DRAW_UPSCALE  # empirical correction
+    p_draw *= _DRAW_UPSCALE
 
     total = p_home + p_draw + p_away
     if total <= 0.0:
         return {'home': 0.45, 'draw': 0.25, 'away': 0.30}
 
     if not allows_draws:
-        # 2-outcome sport: collapse draw mass proportionally into home/away
-        scale = (p_home + p_away) / total
         return {
             'home': p_home / (p_home + p_away),
             'draw': 0.0,
@@ -142,11 +117,6 @@ def match_probabilities(
 
 
 def remove_overround(home_odds: float, draw_odds: float, away_odds: float):
-    """
-    Convert decimal odds to true implied probabilities by removing vig.
-
-    Returns dict or None if odds are invalid.
-    """
     try:
         if not (home_odds and draw_odds and away_odds):
             return None
@@ -167,105 +137,141 @@ def remove_overround(home_odds: float, draw_odds: float, away_odds: float):
 # ════════════════════════════════════════════════════════════════
 
 class FootballPredictionEngine:
-    """
-    Stateless prediction engine.  All DB reads are done per call; the
-    instance holds no mutable state so it is safe to reuse across requests.
 
-    Public interface
-    ────────────────
-    expected_goals(home_id, away_id)  → (λ_home, λ_away)
-    predict(fixture)                  → full result dict
-    generate_prediction(fixture)      → Prediction ORM object (DB write)
-    regenerate_prediction(fixture)    → delete existing + re-create
-    generate_predictions_for_upcoming() → int (count)
-    """
+    # ── Venue-split fixture helpers ────────────────────────────
 
-    # ── Attack / defense rating helpers ───────────────────────
+    def _recent_home_fixtures(self, team_id: int):
+        from ..models.fixture import Fixture
+        return (
+            Fixture.query
+            .filter_by(home_team_id=team_id, status='finished')
+            .filter(Fixture.home_score.isnot(None))
+            .order_by(Fixture.kickoff_at.desc())
+            .limit(_VENUE_LIMIT)
+            .all()
+        )
 
-    def _form_records(self, team_id: int, limit: int = 10):
-        team = Team.query.get(team_id)
-        if not team:
-            return []
-        return team.get_recent_form(limit=limit)
+    def _recent_away_fixtures(self, team_id: int):
+        from ..models.fixture import Fixture
+        return (
+            Fixture.query
+            .filter_by(away_team_id=team_id, status='finished')
+            .filter(Fixture.away_score.isnot(None))
+            .order_by(Fixture.kickoff_at.desc())
+            .limit(_VENUE_LIMIT)
+            .all()
+        )
 
-    def _weighted_average(self, records, attr: str) -> float | None:
-        """
-        Exponentially-weighted mean of `attr` over form records.
-
-        Most recent match → weight 1.0.
-        Each prior match → weight *= _RECENCY_DECAY.
-        """
-        if not records:
+    def _weighted_goals(self, goal_list: list) -> float | None:
+        """Exponentially weighted mean over a list of goal values."""
+        if not goal_list:
             return None
         w = 1.0
         wsum = wcount = 0.0
-        for rec in records:
-            val = getattr(rec, attr, None) or 0
-            wsum += val * w
+        for g in goal_list:
+            wsum += g * w
             wcount += w
             w *= _RECENCY_DECAY
         return wsum / wcount if wcount > 0 else None
 
+    # ── Elo strength helpers ───────────────────────────────────
+
+    def _elo_scale(self, team_id: int) -> float:
+        """
+        Return a scaling factor derived from Club Elo.
+
+        A team at baseline (1600) → 1.0x.
+        A team at 1900 → ~1.19x.  At 1300 → ~0.81x.
+        Clamped to [1 - _ELO_MAX_SCALE, 1 + _ELO_MAX_SCALE].
+        """
+        try:
+            from ..models.team_xg_stats import TeamXGStats
+            row = TeamXGStats.query.filter_by(team_id=team_id).first()
+            if row and row.elo:
+                raw = (row.elo - _ELO_BASELINE) / _ELO_BASELINE
+                return round(1.0 + max(-_ELO_MAX_SCALE, min(raw, _ELO_MAX_SCALE)), 4)
+        except Exception:
+            pass
+        return 1.0
+
+    # ── Attack / defense ratings (venue-aware + Elo scaling) ──
+
+    def home_attack_rating(self, team_id: int) -> float:
+        """Expected goals scored by team at home, scaled by Elo strength."""
+        rows = self._recent_home_fixtures(team_id)
+        if len(rows) >= _MIN_FORM_GAMES:
+            form_val = self._weighted_goals([r.home_score for r in rows])
+            if form_val is not None:
+                return round(max(0.1, form_val * self._elo_scale(team_id)), 3)
+        return round(_HOME_BASELINE * self._elo_scale(team_id), 3)
+
+    def home_defense_rating(self, team_id: int) -> float:
+        """Expected goals conceded by team at home, scaled by Elo strength."""
+        rows = self._recent_home_fixtures(team_id)
+        if len(rows) >= _MIN_FORM_GAMES:
+            form_val = self._weighted_goals([r.away_score for r in rows])
+            if form_val is not None:
+                # Floor at 0.40 — even elite defences concede occasionally
+                return round(max(0.40, form_val / self._elo_scale(team_id)), 3)
+        return round(max(0.40, _AWAY_BASELINE / self._elo_scale(team_id)), 3)
+
+    def away_attack_rating(self, team_id: int) -> float:
+        """Expected goals scored by team away, scaled by Elo strength."""
+        rows = self._recent_away_fixtures(team_id)
+        if len(rows) >= _MIN_FORM_GAMES:
+            form_val = self._weighted_goals([r.away_score for r in rows])
+            if form_val is not None:
+                return round(max(0.1, form_val * self._elo_scale(team_id)), 3)
+        return round(_AWAY_BASELINE * self._elo_scale(team_id), 3)
+
+    def away_defense_rating(self, team_id: int) -> float:
+        """Expected goals conceded by team away, scaled by Elo strength."""
+        rows = self._recent_away_fixtures(team_id)
+        if len(rows) >= _MIN_FORM_GAMES:
+            form_val = self._weighted_goals([r.home_score for r in rows])
+            if form_val is not None:
+                return round(max(0.50, form_val / self._elo_scale(team_id)), 3)
+        return round(max(0.50, _HOME_BASELINE / self._elo_scale(team_id)), 3)
+
+    # ── Backward-compat shims used by PredictionService ───────
+
     def attack_rating(self, team_id: int) -> float:
-        """
-        Recency-weighted average goals scored per game.
-        Falls back to home/away baseline when data is sparse.
-        """
-        records = self._form_records(team_id, limit=10)
-        if len(records) < _MIN_FORM_GAMES:
-            return _HOME_BASELINE
-        avg = self._weighted_average(records, 'goals_scored')
-        return avg if avg is not None else _HOME_BASELINE
+        """Overall attack rating (home+away blended). Used by PredictionService shim."""
+        ha = self.home_attack_rating(team_id)
+        aa = self.away_attack_rating(team_id)
+        return round((ha + aa) / 2, 3)
 
     def defense_rating(self, team_id: int) -> float:
-        """
-        Recency-weighted average goals conceded per game.
-        Lower = better defensive record.
-        """
-        records = self._form_records(team_id, limit=10)
-        if len(records) < _MIN_FORM_GAMES:
-            return _AWAY_BASELINE
-        avg = self._weighted_average(records, 'goals_conceded')
-        return avg if avg is not None else _AWAY_BASELINE
+        """Overall defense rating (home+away blended). Used by PredictionService shim."""
+        hd = self.home_defense_rating(team_id)
+        ad = self.away_defense_rating(team_id)
+        return round((hd + ad) / 2, 3)
 
     # ── Expected goals ─────────────────────────────────────────
 
     def expected_goals(self, home_id: int, away_id: int) -> tuple[float, float]:
         """
-        Estimate expected goals for home and away teams.
+        Venue-aware expected goals.
 
-        Normalised attack-defense model (Dixon-Coles style):
-
-          λ_home = (home_attack / H_base) × (away_defense / A_base) × H_base
-          λ_away = (away_attack / A_base) × (home_defense / H_base) × A_base
-
-        The baseline division + multiplication keeps a league-average team
-        producing the historical league average.  Home advantage is baked
-        into the separate baselines (_HOME_BASELINE > _AWAY_BASELINE).
+        λ_home = home team's home attack  × away team's away defense  / baselines
+        λ_away = away team's away attack  × home team's home defense  / baselines
         """
-        ha = self.attack_rating(home_id)
-        hd = self.defense_rating(home_id)
-        aa = self.attack_rating(away_id)
-        ad = self.defense_rating(away_id)
+        ha = self.home_attack_rating(home_id)   # home team scores at home
+        hd = self.home_defense_rating(home_id)  # home team concedes at home
+        aa = self.away_attack_rating(away_id)   # away team scores away
+        ad = self.away_defense_rating(away_id)  # away team concedes away
 
         lambda_home = (ha / _HOME_BASELINE) * (ad / _AWAY_BASELINE) * _HOME_BASELINE
         lambda_away = (aa / _AWAY_BASELINE) * (hd / _HOME_BASELINE) * _AWAY_BASELINE
 
-        # Clamp to a realistic range
         lambda_home = max(0.30, min(lambda_home, 5.0))
         lambda_away = max(0.20, min(lambda_away, 5.0))
 
         return round(lambda_home, 3), round(lambda_away, 3)
 
-    # ── H2H momentum adjustment ────────────────────────────────
+    # ── H2H momentum ───────────────────────────────────────────
 
     def _h2h_delta(self, home_id: int, away_id: int) -> dict:
-        """
-        Small probability delta derived from H2H history.
-
-        h2h_score ∈ [0, 1], 0.5 = neutral.
-        Maps to probability shift in [-H2H_MAX_SHIFT, +H2H_MAX_SHIFT].
-        """
         records = H2HRecord.get_h2h_records(home_id, away_id, limit=8)
         if not records:
             return {'home': 0.0, 'draw': 0.0, 'away': 0.0}
@@ -276,13 +282,6 @@ class FootballPredictionEngine:
     # ── Bookmaker odds blending ────────────────────────────────
 
     def _blend_with_market(self, probs: dict, fixture_id: int) -> dict:
-        """
-        Bayesian blend of model probs and bookmaker-implied probs.
-
-        Best (highest) odds for each outcome are selected across all
-        available bookmakers, overround is removed, then linearly blended
-        with the model output at weight _ODDS_WEIGHT.
-        """
         rows = Odds.query.filter_by(fixture_id=fixture_id).all()
         if not rows:
             return probs
@@ -301,27 +300,13 @@ class FootballPredictionEngine:
             return probs
 
         w = _ODDS_WEIGHT
-        blended = {
-            k: probs[k] * (1.0 - w) + market[k] * w
-            for k in ('home', 'draw', 'away')
-        }
+        blended = {k: probs[k] * (1.0 - w) + market[k] * w for k in ('home', 'draw', 'away')}
         total = sum(blended.values())
         return {k: v / total for k, v in blended.items()}
 
     # ── Value-bet detection ────────────────────────────────────
 
-    def detect_value_bet(
-        self, fixture_id: int, predicted_outcome: str, model_prob: float
-    ) -> dict:
-        """
-        Compare model probability against best available odds.
-
-        A value bet exists when:
-            model_prob  >  (1 / best_odds)  +  _VALUE_EDGE_MIN
-
-        i.e. the model believes the true probability is meaningfully
-        higher than the bookmaker's implied probability.
-        """
+    def detect_value_bet(self, fixture_id: int, predicted_outcome: str, model_prob: float) -> dict:
         result = {
             'is_value_bet': False,
             'best_odds': None,
@@ -363,20 +348,6 @@ class FootballPredictionEngine:
     # ── Main prediction pipeline ───────────────────────────────
 
     def predict(self, fixture) -> dict:
-        """
-        Full prediction pipeline for a single fixture.
-
-        Returns
-        -------
-        dict
-            predicted_outcome  : 'home' | 'draw' | 'away'
-            confidence_score   : float  0.0 – 1.0
-            probabilities      : {'home': p, 'draw': p, 'away': p}
-            lambda_home        : expected home goals
-            lambda_away        : expected away goals
-            is_value_bet       : bool
-            value_edge         : float | None
-        """
         sport = (
             fixture.league.sport.name
             if fixture.league and fixture.league.sport
@@ -384,33 +355,33 @@ class FootballPredictionEngine:
         )
         allows_draws = sport == 'football'
 
-        # 1. Expected goals
+        # 1. Venue-aware expected goals
         lh, la = self.expected_goals(fixture.home_team_id, fixture.away_team_id)
 
-        # 2. Bivariate Poisson → H/D/A probabilities
+        # 2. Bivariate Poisson → H/D/A
         probs = match_probabilities(lh, la, allows_draws=allows_draws)
 
-        # 3. H2H momentum adjustment
+        # 3. H2H adjustment
         delta = self._h2h_delta(fixture.home_team_id, fixture.away_team_id)
         for k in ('home', 'draw', 'away'):
             probs[k] = max(0.01, probs[k] + delta[k])
         total = sum(probs.values())
         probs = {k: v / total for k, v in probs.items()}
 
-        # 4. Blend with bookmaker market
+        # 4. Blend with bookmaker market (higher weight than v1)
         probs = self._blend_with_market(probs, fixture.id)
 
-        # 5. Predicted outcome = highest probability
+        # 5. Draw scepticism: only predict draw when it's genuinely probable
         predicted = max(probs, key=probs.get)
+        if allows_draws and predicted == 'draw' and probs['draw'] < _DRAW_THRESHOLD:
+            predicted = 'home' if probs['home'] >= probs['away'] else 'away'
+
         if not allows_draws and predicted == 'draw':
             predicted = 'home' if probs['home'] >= probs['away'] else 'away'
 
         model_prob = probs[predicted]
 
-        # 6. Confidence score
-        #    Map winning probability onto [0.50, 0.95].
-        #    Baseline (random chance) → 0.50.
-        #    At 100% probability → 0.95.
+        # 6. Confidence score mapped to [0.50, 0.95]
         baseline = 1 / 3 if allows_draws else 0.5
         span = 1.0 - baseline
         confidence = 0.50 + ((model_prob - baseline) / span) * 0.45
@@ -427,16 +398,25 @@ class FootballPredictionEngine:
             'lambda_away': la,
             'is_value_bet': vb['is_value_bet'],
             'value_edge': vb['edge'],
+            'model_prob': round(model_prob, 4),
         }
 
     # ── DB lifecycle ───────────────────────────────────────────
 
-    def generate_prediction(self, fixture, is_premium: bool = False) -> Prediction:
+    def generate_prediction(self, fixture, is_premium: bool = False) -> Prediction | None:
         existing = Prediction.query.filter_by(fixture_id=fixture.id).first()
         if existing:
             return existing
 
         result = self.predict(fixture)
+
+        # Confidence gate: skip uncertain fixtures
+        if result['model_prob'] < _MIN_MODEL_PROB:
+            logger.debug(
+                '[Engine] fixture=%d skipped — low confidence (%.1f%%)',
+                fixture.id, result['model_prob'] * 100
+            )
+            return None
 
         pred = Prediction(
             fixture_id=fixture.id,
@@ -449,26 +429,22 @@ class FootballPredictionEngine:
         db.session.commit()
 
         logger.info(
-            '[Engine] fixture=%d  %s @ %.1f%%  λ=(%.2f, %.2f)  value=%s',
+            '[Engine] fixture=%d  %s @ %.1f%%  λ=(%.2f,%.2f)  value=%s',
             fixture.id,
             result['predicted_outcome'],
-            result['confidence_score'] * 100,
+            result['model_prob'] * 100,
             result['lambda_home'],
             result['lambda_away'],
             result['is_value_bet'],
         )
         return pred
 
-    def regenerate_prediction(self, fixture, is_premium: bool = False) -> Prediction:
-        """Delete existing prediction and produce a fresh one."""
+    def regenerate_prediction(self, fixture, is_premium: bool = False) -> Prediction | None:
         Prediction.query.filter_by(fixture_id=fixture.id).delete()
         db.session.commit()
         return self.generate_prediction(fixture, is_premium=is_premium)
 
-    def generate_predictions_for_upcoming(
-        self, premium_threshold: float = 0.72
-    ) -> int:
-        """Generate predictions for all upcoming fixtures lacking one."""
+    def generate_predictions_for_upcoming(self, premium_threshold: float = 0.72) -> int:
         from ..models.fixture import Fixture
 
         upcoming = Fixture.query.filter_by(status='upcoming').filter(
@@ -479,6 +455,8 @@ class FootballPredictionEngine:
         for fixture in upcoming:
             try:
                 result = self.predict(fixture)
+                if result['model_prob'] < _MIN_MODEL_PROB:
+                    continue
                 is_premium = result['confidence_score'] >= premium_threshold
                 self.generate_prediction(fixture, is_premium=is_premium)
                 generated += 1

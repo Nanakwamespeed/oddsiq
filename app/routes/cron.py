@@ -69,6 +69,13 @@ def ingest():
         logger.error(f'Ingest tennis error: {e}')
         results['tennis'] = str(e)
 
+    try:
+        from ..services.understat_service import UnderstatService
+        results['elo_stats'] = UnderstatService().ingest_xg_stats()
+    except Exception as e:
+        logger.error(f'Ingest Elo stats error: {e}')
+        results['elo_stats'] = str(e)
+
     logger.info(f'Cron ingest complete: {results}')
     return jsonify({'ok': True, 'results': results})
 

@@ -91,7 +91,10 @@ def login():
         return json_error('Invalid email or password', 401)
 
     # Create access token (identity must be a string for JWT)
-    access_token = create_access_token(identity=str(user.id))
+    access_token = create_access_token(
+        identity=str(user.id),
+        additional_claims={'role': user.role}
+    )
 
     # Create refresh token and store hash in DB
     refresh_expires = datetime.utcnow() + current_app.config['JWT_REFRESH_TOKEN_EXPIRES']
@@ -146,7 +149,10 @@ def refresh():
     token_record.revoke()
 
     # Create new access token
-    access_token = create_access_token(identity=user.id)
+    access_token = create_access_token(
+        identity=user.id,
+        additional_claims={'role': user.role}
+    )
 
     # Create new refresh token (rotation)
     refresh_expires = datetime.utcnow() + current_app.config['JWT_REFRESH_TOKEN_EXPIRES']

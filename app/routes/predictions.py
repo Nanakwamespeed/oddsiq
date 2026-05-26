@@ -1,5 +1,5 @@
 """Predictions routes with premium gating."""
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Blueprint, request
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt, verify_jwt_in_request
 from ..extensions import db, cache
@@ -14,6 +14,53 @@ from ..utils.decorators import premium_required
 from ..utils.helpers import json_error, json_success, get_date_range, parse_sport_filter
 
 predictions_bp = Blueprint('predictions', __name__)
+
+
+@predictions_bp.route('/stats', methods=['GET'])
+@cache.cached(timeout=900, key_prefix='prediction_stats')
+def get_prediction_stats():
+    """Public stats for the free-vs-premium comparison section."""
+    now = datetime.utcnow()
+    today_end = now.replace(hour=23, minute=59, second=59)
+    week_end = now + timedelta(days=7)
+    month_end = now + timedelta(days=30)
+
+    base = Prediction.query.join(Fixture).filter(
+        Fixture.status == 'upcoming',
+        Fixture.kickoff_at >= now
+    )
+
+    daily_total = base.filter(Fixture.kickoff_at <= today_end).count()
+    weekly_total = base.filter(Fixture.kickoff_at <= week_end).count()
+    monthly_total = base.filter(Fixture.kickoff_at <= month_end).count()
+
+    value_bets_today = Prediction.query.join(Fixture).filter(
+        Prediction.is_value_bet == True,  # noqa: E712
+        Fixture.status == 'upcoming',
+        Fixture.kickoff_at >= now,
+        Fixture.kickoff_at <= today_end
+    ).count()
+
+    FREE_DAILY_CAP = 3
+    return json_success(data={
+        'today': {
+            'total': daily_total,
+            'free': min(FREE_DAILY_CAP, daily_total),
+            'pct': round((FREE_DAILY_CAP / daily_total * 100) if daily_total else 100, 1)
+        },
+        'week': {
+            'total': weekly_total,
+            'free': min(FREE_DAILY_CAP * 7, weekly_total),
+            'pct': round((FREE_DAILY_CAP * 7 / weekly_total * 100) if weekly_total else 100, 1)
+        },
+        'month': {
+            'total': monthly_total,
+            'free': min(FREE_DAILY_CAP * 30, monthly_total),
+            'pct': round((FREE_DAILY_CAP * 30 / monthly_total * 100) if monthly_total else 100, 1)
+        },
+        'value_bets_today': value_bets_today,
+        'free_cap': FREE_DAILY_CAP
+    })
 
 
 def add_h2h_and_form_data(pred_data, fixture):

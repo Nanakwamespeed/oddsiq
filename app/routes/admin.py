@@ -129,7 +129,8 @@ def list_users():
 @admin_bp.route('/users/<int:user_id>/role', methods=['PUT'])
 @admin_required
 def update_user_role(user_id):
-    """Change a user's role."""
+    """Change a user's role and optionally set subscription expiry."""
+    from datetime import datetime
     user = User.query.get(user_id)
 
     if not user:
@@ -142,11 +143,20 @@ def update_user_role(user_id):
         return json_error('Invalid role. Choose free, premium, or admin.', 400)
 
     user.role = new_role
+
+    if new_role == 'premium' and data.get('expires_at'):
+        try:
+            user.subscription_expires_at = datetime.fromisoformat(data['expires_at'].replace('Z', '+00:00'))
+        except (ValueError, AttributeError):
+            return json_error('Invalid expires_at format. Use ISO 8601.', 400)
+    elif new_role == 'free':
+        user.subscription_expires_at = None
+
     db.session.commit()
 
     return json_success(
         data=user.to_dict(include_email=True),
-        message=f'User role updated to {new_role}'
+        message=f'User updated to {new_role}'
     )
 
 

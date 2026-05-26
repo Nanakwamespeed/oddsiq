@@ -72,6 +72,9 @@ def initiate_payment():
 
     amount = current_app.config['MONTHLY_PLAN_AMOUNT'] if plan == 'monthly' else current_app.config['ANNUAL_PLAN_AMOUNT']
 
+    frontend_url = current_app.config.get('FRONTEND_URL', 'https://www.edipredictions.com')
+    callback_url = f'{frontend_url}/payment/callback'
+
     paystack = PaystackService()
     result = paystack.initialize_transaction(
         email=user.email,
@@ -79,7 +82,8 @@ def initiate_payment():
         metadata={
             'user_id': user.id,
             'plan': plan
-        }
+        },
+        callback_url=callback_url
     )
 
     if not result['success']:

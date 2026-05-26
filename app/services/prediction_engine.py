@@ -202,7 +202,7 @@ class FootballPredictionEngine:
         if len(rows) >= _MIN_FORM_GAMES:
             form_val = self._weighted_goals([r.home_score for r in rows])
             if form_val is not None:
-                return round(max(0.1, form_val * self._elo_scale(team_id)), 3)
+                return round(max(0.50, form_val * self._elo_scale(team_id)), 3)
         return round(_HOME_BASELINE * self._elo_scale(team_id), 3)
 
     def home_defense_rating(self, team_id: int) -> float:
@@ -221,7 +221,7 @@ class FootballPredictionEngine:
         if len(rows) >= _MIN_FORM_GAMES:
             form_val = self._weighted_goals([r.away_score for r in rows])
             if form_val is not None:
-                return round(max(0.1, form_val * self._elo_scale(team_id)), 3)
+                return round(max(0.40, form_val * self._elo_scale(team_id)), 3)
         return round(_AWAY_BASELINE * self._elo_scale(team_id), 3)
 
     def away_defense_rating(self, team_id: int) -> float:
@@ -264,8 +264,8 @@ class FootballPredictionEngine:
         lambda_home = (ha / _HOME_BASELINE) * (ad / _AWAY_BASELINE) * _HOME_BASELINE
         lambda_away = (aa / _AWAY_BASELINE) * (hd / _HOME_BASELINE) * _AWAY_BASELINE
 
-        lambda_home = max(0.30, min(lambda_home, 5.0))
-        lambda_away = max(0.20, min(lambda_away, 5.0))
+        lambda_home = max(0.50, min(lambda_home, 5.0))
+        lambda_away = max(0.40, min(lambda_away, 5.0))
 
         return round(lambda_home, 3), round(lambda_away, 3)
 

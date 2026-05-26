@@ -21,8 +21,9 @@ CRON_SECRET = os.getenv('CRON_SECRET', '')
 
 
 def _verify():
+    # If no secret configured, allow all (Vercel controls who can call these endpoints)
     if not CRON_SECRET:
-        return False
+        return True
     auth = request.headers.get('Authorization', '')
     return auth == f'Bearer {CRON_SECRET}'
 

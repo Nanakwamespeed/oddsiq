@@ -105,7 +105,10 @@ def accuracy():
         from ..models.fixture import Fixture
         from ..models.prediction import Prediction
         from ..models.accuracy_log import AccuracyLog
+        from ..models.market_prediction import MarketPrediction
+        from ..models.market_accuracy_log import MarketAccuracyLog
 
+        # ── 1X2 predictions ──────────────────────────────────────────
         finished = Fixture.query.filter_by(status='finished').join(Prediction).filter(
             ~Prediction.id.in_(db.session.query(AccuracyLog.prediction_id))
         ).all()
@@ -124,12 +127,86 @@ def accuracy():
                 was_correct=prediction.predicted_outcome == outcome
             ))
             logged += 1
+
+        # ── Market predictions (BTTS, O/U, Double Chance) ────────────
+        already_logged = db.session.query(MarketAccuracyLog.market_prediction_id).subquery()
+        market_preds = (
+            MarketPrediction.query
+            .join(Fixture, Fixture.id == MarketPrediction.fixture_id)
+            .filter(
+                Fixture.status == 'finished',
+                Fixture.home_score != None,
+                Fixture.away_score != None,
+                ~MarketPrediction.id.in_(already_logged)
+            )
+            .all()
+        )
+
+        market_logged = 0
+        for mp in market_preds:
+            fixture = mp.fixture
+            actual = _market_actual_outcome(mp, fixture)
+            if actual is None:
+                continue  # Can't verify (corners, HT/FT — no score data)
+            db.session.add(MarketAccuracyLog(
+                market_prediction_id=mp.id,
+                actual_outcome=actual,
+                was_correct=(mp.predicted_outcome == actual)
+            ))
+            market_logged += 1
+
         db.session.commit()
-        logger.info(f'Cron accuracy: logged {logged}')
-        return jsonify({'ok': True, 'logged': logged})
+        logger.info(f'Cron accuracy: 1X2={logged}, market={market_logged}')
+        return jsonify({'ok': True, 'logged': logged, 'market_logged': market_logged})
     except Exception as e:
         logger.error(f'Accuracy cron error: {e}')
         return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+def _market_actual_outcome(mp, fixture):
+    """
+    Derive the actual outcome for a market prediction from final scores.
+    Returns the outcome string, or None if we can't verify (e.g. corners).
+    """
+    home, away = fixture.home_score, fixture.away_score
+
+    if mp.market_type == 'btts':
+        return 'yes' if (home > 0 and away > 0) else 'no'
+
+    if mp.market_type in ('over_under', 'corners'):
+        line = mp.line_value
+        if line is None:
+            return None
+        if mp.market_type == 'over_under':
+            return 'over' if (home + away) > line else 'under'
+        # Corners: no data available
+        return None
+
+    if mp.market_type == 'double_chance':
+        if home > away:
+            result = 'home'
+        elif away > home:
+            result = 'away'
+        else:
+            result = 'draw'
+        if mp.predicted_outcome == '1X':
+            actual = '1X' if result in ('home', 'draw') else 'X2'
+        elif mp.predicted_outcome == 'X2':
+            actual = 'X2' if result in ('draw', 'away') else '1X'
+        elif mp.predicted_outcome == '12':
+            actual = '12' if result in ('home', 'away') else 'draw_draw'
+        else:
+            return None
+        # Simplify: just return whether the predicted DC outcome was correct
+        if mp.predicted_outcome == '1X':
+            return '1X' if result in ('home', 'draw') else 'not_1X'
+        if mp.predicted_outcome == 'X2':
+            return 'X2' if result in ('draw', 'away') else 'not_X2'
+        if mp.predicted_outcome == '12':
+            return '12' if result in ('home', 'away') else 'not_12'
+
+    # HT/FT: can't verify from full-time scores alone
+    return None
 
 
 @cron_bp.route('/newsletter', methods=['POST'])

@@ -109,10 +109,20 @@ def get_accuracy_stats():
                 'accuracy_percentage': round((conf_correct / conf_total * 100), 1)
             })
 
-    # Value bets accuracy
-    value_query = query.join(Prediction).filter(Prediction.is_value_bet == True)
+    # Value bets accuracy (from market predictions with is_value_bet=True)
+    from ..models.market_accuracy_log import MarketAccuracyLog
+    from ..models.market_prediction import MarketPrediction
+
+    value_query = (
+        db.session.query(MarketAccuracyLog)
+        .join(MarketPrediction, MarketPrediction.id == MarketAccuracyLog.market_prediction_id)
+        .filter(MarketPrediction.is_value_bet == True)
+    )
+    if start_date:
+        value_query = value_query.filter(MarketAccuracyLog.logged_at >= start_date)
+
     value_total = value_query.count()
-    value_correct = value_query.filter(AccuracyLog.was_correct == True).count()
+    value_correct = value_query.filter(MarketAccuracyLog.was_correct == True).count()
 
     value_bets = {
         'total': value_total,

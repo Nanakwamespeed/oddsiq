@@ -17,7 +17,7 @@ predictions_bp = Blueprint('predictions', __name__)
 
 
 @predictions_bp.route('/stats', methods=['GET'])
-@cache.cached(timeout=900, key_prefix='prediction_stats')
+@cache.cached(timeout=300, key_prefix='prediction_stats')
 def get_prediction_stats():
     """Public stats for the free-vs-premium comparison section."""
     now = datetime.utcnow()

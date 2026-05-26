@@ -3,7 +3,7 @@ from datetime import datetime
 from flask import Blueprint, request
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt, verify_jwt_in_request
 from ..extensions import db, cache
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import aliased, subqueryload
 from ..models.prediction import Prediction
 from ..models.fixture import Fixture
 from ..models.league import League
@@ -142,7 +142,12 @@ def get_predictions():
     per_page = request.args.get('per_page', 20, type=int)
 
     # Build query - only upcoming games (status = 'upcoming' and kickoff_at >= now)
-    query = Prediction.query.join(Fixture).join(League).filter(
+    _eager = [
+        subqueryload('fixture').subqueryload('home_team'),
+        subqueryload('fixture').subqueryload('away_team'),
+        subqueryload('fixture').subqueryload('league'),
+    ]
+    query = Prediction.query.join(Fixture).join(League).options(*_eager).filter(
         Fixture.status == 'upcoming',
         Fixture.kickoff_at >= datetime.utcnow()
     )
@@ -539,7 +544,12 @@ def get_top_picks():
 
     # Get predictions ordered by confidence - today only
     start_date, end_date = get_date_range('today')
-    query = Prediction.query.join(Fixture).join(League).filter(
+    _eager = [
+        subqueryload('fixture').subqueryload('home_team'),
+        subqueryload('fixture').subqueryload('away_team'),
+        subqueryload('fixture').subqueryload('league'),
+    ]
+    query = Prediction.query.join(Fixture).join(League).options(*_eager).filter(
         Fixture.status == 'upcoming',
         Fixture.kickoff_at >= datetime.utcnow(),
         Fixture.kickoff_at.between(start_date, end_date)
@@ -635,8 +645,13 @@ def get_today_predictions():
     start_date, end_date = get_date_range('today')
     now = datetime.utcnow()
 
+    _eager = [
+        subqueryload('fixture').subqueryload('home_team'),
+        subqueryload('fixture').subqueryload('away_team'),
+        subqueryload('fixture').subqueryload('league'),
+    ]
     # Only show today's games that haven't started yet
-    query = Prediction.query.join(Fixture).join(League).filter(
+    query = Prediction.query.join(Fixture).join(League).options(*_eager).filter(
         Fixture.status == 'upcoming',
         Fixture.kickoff_at.between(start_date, end_date),
         Fixture.kickoff_at >= now  # Exclude past games
@@ -682,8 +697,13 @@ def get_value_bets():
     date_str = request.args.get('date')  # None means all dates
     league_types = parse_league_type_filter(request.args.get('type'))
 
+    _eager = [
+        subqueryload('fixture').subqueryload('home_team'),
+        subqueryload('fixture').subqueryload('away_team'),
+        subqueryload('fixture').subqueryload('league'),
+    ]
     # Build query for value bets only - exclude past games
-    query = Prediction.query.filter_by(is_value_bet=True).join(Fixture).join(League).filter(
+    query = Prediction.query.filter_by(is_value_bet=True).join(Fixture).join(League).options(*_eager).filter(
         Fixture.status == 'upcoming',
         Fixture.kickoff_at >= datetime.utcnow()
     )

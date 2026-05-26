@@ -186,6 +186,10 @@ def register_blueprints(app):
 
 def register_request_logging(app):
     """Register request/response logging middleware."""
+    # Skip verbose logging on Vercel — response body JSON deserialization on every request
+    # is very expensive for large payloads (prediction lists can be 50KB+)
+    if os.getenv('VERCEL') == '1':
+        return
 
     # ANSI color codes
     COLORS = {

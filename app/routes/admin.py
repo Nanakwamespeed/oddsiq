@@ -1,16 +1,89 @@
 """Admin routes for managing predictions, users, and guides."""
+from datetime import datetime, timedelta
 from flask import Blueprint, request, current_app
 from flask_jwt_extended import jwt_required
+from sqlalchemy import func
 from ..extensions import db
 from ..models.user import User
 from ..models.prediction import Prediction
 from ..models.guide import Guide
 from ..models.accuracy_log import AccuracyLog
 from ..models.fixture import Fixture
+from ..models.subscription import Subscription
 from ..utils.decorators import admin_required
 from ..utils.helpers import json_error, json_success
 
 admin_bp = Blueprint('admin', __name__)
+
+
+# --- Stats & Revenue ---
+
+@admin_bp.route('/stats', methods=['GET'])
+@admin_required
+def get_stats():
+    """Dashboard stats: users by role, revenue, new signups."""
+    now = datetime.utcnow()
+    thirty_days_ago = now - timedelta(days=30)
+    seven_days_ago = now - timedelta(days=7)
+
+    # User counts
+    total_users = User.query.count()
+    free_users = User.query.filter_by(role='free').count()
+    premium_users = User.query.filter_by(role='premium').count()
+    admin_users = User.query.filter_by(role='admin').count()
+
+    # New signups
+    new_last_7 = User.query.filter(User.created_at >= seven_days_ago).count()
+    new_last_30 = User.query.filter(User.created_at >= thirty_days_ago).count()
+
+    # Active vs expired premium (by subscription_expires_at)
+    active_premium = User.query.filter(
+        User.role == 'premium',
+        User.subscription_expires_at > now
+    ).count()
+    no_expiry_premium = User.query.filter(
+        User.role == 'premium',
+        User.subscription_expires_at == None  # noqa: E711
+    ).count()
+    expired_premium = User.query.filter(
+        User.role == 'premium',
+        User.subscription_expires_at <= now
+    ).count()
+
+    # Revenue (from subscriptions with amount stored)
+    revenue_total = db.session.query(func.sum(Subscription.amount)).scalar() or 0
+    revenue_last_30 = db.session.query(func.sum(Subscription.amount)).filter(
+        Subscription.created_at >= thirty_days_ago
+    ).scalar() or 0
+    revenue_last_7 = db.session.query(func.sum(Subscription.amount)).filter(
+        Subscription.created_at >= seven_days_ago
+    ).scalar() or 0
+
+    # Recent subscriptions
+    recent_subs = Subscription.query.order_by(Subscription.created_at.desc()).limit(10).all()
+
+    return json_success(data={
+        'users': {
+            'total': total_users,
+            'free': free_users,
+            'premium': premium_users,
+            'admin': admin_users,
+            'new_last_7_days': new_last_7,
+            'new_last_30_days': new_last_30,
+        },
+        'premium': {
+            'active': active_premium + no_expiry_premium,
+            'expired': expired_premium,
+            'no_expiry': no_expiry_premium,
+        },
+        'revenue': {
+            'total_pesewas': revenue_total,
+            'total_ghs': round(revenue_total / 100, 2),
+            'last_7_days_ghs': round(revenue_last_7 / 100, 2),
+            'last_30_days_ghs': round(revenue_last_30 / 100, 2),
+        },
+        'recent_subscriptions': [s.to_dict() for s in recent_subs]
+    })
 
 
 # --- Data Ingestion Triggers ---

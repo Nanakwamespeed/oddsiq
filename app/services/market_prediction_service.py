@@ -125,25 +125,20 @@ class MarketPredictionService:
 
         for fixture in upcoming:
             try:
-                # Determine if should be premium based on fixture
-                is_premium = False
-
                 predictions = self.generate_predictions_for_fixture(
-                    fixture, markets=markets, is_premium=is_premium
+                    fixture, markets=markets, is_premium=False
                 )
-
-                # Count predictions
                 for market_type, pred_or_list in predictions.items():
                     if isinstance(pred_or_list, list):
                         total_generated += len(pred_or_list)
                     elif pred_or_list:
                         total_generated += 1
-
+                db.session.commit()
             except Exception as e:
                 logger.error(f"Failed to generate predictions for fixture {fixture.id}: {e}")
+                db.session.rollback()
                 continue
 
-        db.session.commit()
         logger.info(f"Generated {total_generated} market predictions for {len(upcoming)} fixtures")
         return total_generated
 

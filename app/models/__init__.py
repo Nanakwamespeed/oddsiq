@@ -19,6 +19,7 @@ from .market_prediction import MarketPrediction
 from .market_odds import MarketOdds
 from .team_stats import TeamStats
 from .market_accuracy_log import MarketAccuracyLog
+from .team_xg_stats import TeamXGStats
 
 __all__ = [
     'User',
@@ -40,4 +41,5 @@ __all__ = [
     'MarketOdds',
     'TeamStats',
     'MarketAccuracyLog',
+    'TeamXGStats',
 ]

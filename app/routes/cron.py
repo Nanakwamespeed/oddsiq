@@ -34,7 +34,7 @@ def _verify():
 
 # ── Split ingest endpoints ────────────────────────────────────────────────────
 
-@cron_bp.route('/ingest/football', methods=['POST'])
+@cron_bp.route('/ingest/football', methods=['GET', 'POST'])
 def ingest_football():
     if not _verify():
         return jsonify({'error': 'Unauthorized'}), 401
@@ -50,7 +50,7 @@ def ingest_football():
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
-@cron_bp.route('/ingest/basketball', methods=['POST'])
+@cron_bp.route('/ingest/basketball', methods=['GET', 'POST'])
 def ingest_basketball():
     if not _verify():
         return jsonify({'error': 'Unauthorized'}), 401
@@ -66,7 +66,7 @@ def ingest_basketball():
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
-@cron_bp.route('/ingest/tennis', methods=['POST'])
+@cron_bp.route('/ingest/tennis', methods=['GET', 'POST'])
 def ingest_tennis():
     if not _verify():
         return jsonify({'error': 'Unauthorized'}), 401
@@ -82,7 +82,7 @@ def ingest_tennis():
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
-@cron_bp.route('/ingest/odds', methods=['POST'])
+@cron_bp.route('/ingest/odds', methods=['GET', 'POST'])
 def ingest_odds():
     if not _verify():
         return jsonify({'error': 'Unauthorized'}), 401
@@ -98,7 +98,7 @@ def ingest_odds():
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
-@cron_bp.route('/ingest/stats', methods=['POST'])
+@cron_bp.route('/ingest/stats', methods=['GET', 'POST'])
 def ingest_stats():
     if not _verify():
         return jsonify({'error': 'Unauthorized'}), 401
@@ -114,7 +114,7 @@ def ingest_stats():
 
 # ── Split predict endpoints ───────────────────────────────────────────────────
 
-@cron_bp.route('/predict/1x2', methods=['POST'])
+@cron_bp.route('/predict/1x2', methods=['GET', 'POST'])
 def predict_1x2():
     if not _verify():
         return jsonify({'error': 'Unauthorized'}), 401
@@ -128,7 +128,7 @@ def predict_1x2():
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
-@cron_bp.route('/predict/markets', methods=['POST'])
+@cron_bp.route('/predict/markets', methods=['GET', 'POST'])
 def predict_markets():
     if not _verify():
         return jsonify({'error': 'Unauthorized'}), 401
@@ -144,7 +144,7 @@ def predict_markets():
 
 # ── Accuracy ──────────────────────────────────────────────────────────────────
 
-@cron_bp.route('/accuracy', methods=['POST'])
+@cron_bp.route('/accuracy', methods=['GET', 'POST'])
 def accuracy():
     if not _verify():
         return jsonify({'error': 'Unauthorized'}), 401
@@ -210,7 +210,7 @@ def accuracy():
 
 # ── Newsletter ────────────────────────────────────────────────────────────────
 
-@cron_bp.route('/newsletter', methods=['POST'])
+@cron_bp.route('/newsletter', methods=['GET', 'POST'])
 def newsletter():
     if not _verify():
         return jsonify({'error': 'Unauthorized'}), 401
@@ -226,7 +226,7 @@ def newsletter():
 
 # ── Legacy combined endpoint (kept for manual one-shot runs) ──────────────────
 
-@cron_bp.route('/ingest', methods=['POST'])
+@cron_bp.route('/ingest', methods=['GET', 'POST'])
 def ingest():
     if not _verify():
         return jsonify({'error': 'Unauthorized'}), 401
@@ -278,7 +278,7 @@ def ingest():
     return jsonify({'ok': True, 'results': results})
 
 
-@cron_bp.route('/predict', methods=['POST'])
+@cron_bp.route('/predict', methods=['GET', 'POST'])
 def predict():
     if not _verify():
         return jsonify({'error': 'Unauthorized'}), 401

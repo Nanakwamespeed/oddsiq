@@ -55,9 +55,12 @@ class OddsService:
             try:
                 url = f'{self.base_url}/{endpoint}'
                 response = requests.get(url, params=params, timeout=30)
-                if response.status_code == 401:
-                    logger.warning('Odds API key exhausted or invalid, trying next key')
+                if response.status_code in (401, 429):
+                    logger.warning(f'Odds API key quota/limit hit ({response.status_code}), trying next key')
                     continue
+                if response.status_code == 404:
+                    # Sport not available (off-season or not on free tier) — not an error
+                    return None
                 response.raise_for_status()
                 return response.json()
             except requests.RequestException as e:
@@ -460,10 +463,21 @@ class OddsService:
         'soccer_conmebol_copa_libertadores',
     ]
 
+    def _get_active_sport_keys(self):
+        """Return the set of sport keys currently marked active by The Odds API."""
+        data = self._make_request('sports')
+        if not data:
+            return None  # Can't determine — caller should fall back to full list
+        return {s['key'] for s in data if s.get('active')}
+
     def ingest_football_odds(self):
-        """Ingest odds for all supported football leagues."""
+        """Ingest odds for active football leagues only (conserves monthly quota)."""
+        active = self._get_active_sport_keys()
         total = 0
         for sport_key in self.FOOTBALL_SPORT_KEYS:
+            if active is not None and sport_key not in active:
+                logger.info(f'Skipping {sport_key} — not active in The Odds API')
+                continue
             count = self.ingest_odds_for_sport(sport_key)
             if count:
                 logger.info(f'  {sport_key}: {count} odds records')

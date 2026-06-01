@@ -128,13 +128,11 @@ class FootballService:
         sport = self.get_or_create_sport()
         total_fixtures = 0
 
-        # ESPN returns results oldest-first, so starting the range in the past
-        # pushes upcoming matches off the first page. Use two calls per league:
-        #   1. upcoming: today → +days_ahead  (the important one)
-        #   2. lookback: today-3 → yesterday  (to update finished scores)
+        # ESPN returns results oldest-first — start from today so upcoming matches
+        # land on page 1. Score updates for finished fixtures are handled by the
+        # accuracy cron, so no lookback needed here.
         today = datetime.utcnow()
-        upcoming_range = f"{today.strftime('%Y%m%d')}-{(today + timedelta(days=days_ahead)).strftime('%Y%m%d')}"
-        lookback_range = f"{(today - timedelta(days=3)).strftime('%Y%m%d')}-{(today - timedelta(days=1)).strftime('%Y%m%d')}"
+        date_range = f"{today.strftime('%Y%m%d')}-{(today + timedelta(days=days_ahead)).strftime('%Y%m%d')}"
 
         for league_code, league_info in SUPPORTED_LEAGUES.items():
             league = League.query.filter_by(external_id=f'espn_{league_code}').first()
@@ -142,14 +140,12 @@ class FootballService:
                 continue
 
             url = f'{BASE_URL}/{league_code}/scoreboard'
-
-            for date_range in (upcoming_range, lookback_range):
-                data = self._make_request(url, {'dates': date_range, 'limit': 100})
-                if not data:
-                    continue
-                for event in data.get('events', []):
-                    created = self._process_event(event, league)
-                    total_fixtures += created
+            data = self._make_request(url, {'dates': date_range, 'limit': 100})
+            if not data:
+                continue
+            for event in data.get('events', []):
+                created = self._process_event(event, league)
+                total_fixtures += created
 
         db.session.commit()
         logger.info(f'Football: Ingested {total_fixtures} fixtures')

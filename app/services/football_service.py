@@ -128,27 +128,27 @@ class FootballService:
         sport = self.get_or_create_sport()
         total_fixtures = 0
 
+        # Single date-range request per league instead of one request per day.
+        # ESPN accepts ?dates=YYYYMMDD-YYYYMMDD and returns all events in the window.
+        start = datetime.utcnow() - timedelta(days=3)
+        end = datetime.utcnow() + timedelta(days=days_ahead)
+        date_range = f"{start.strftime('%Y%m%d')}-{end.strftime('%Y%m%d')}"
+
         for league_code, league_info in SUPPORTED_LEAGUES.items():
-            # Get league from DB
             league = League.query.filter_by(external_id=f'espn_{league_code}').first()
             if not league:
                 continue
 
-            # Fetch fixtures for multiple days (look back 3 days to catch finished results)
-            for day_offset in range(-3, days_ahead):
-                date = datetime.utcnow() + timedelta(days=day_offset)
-                date_str = date.strftime('%Y%m%d')
+            url = f'{BASE_URL}/{league_code}/scoreboard'
+            data = self._make_request(url, {'dates': date_range, 'limit': 100})
 
-                url = f'{BASE_URL}/{league_code}/scoreboard'
-                data = self._make_request(url, {'dates': date_str})
+            if not data:
+                continue
 
-                if not data:
-                    continue
-
-                events = data.get('events', [])
-                for event in events:
-                    created = self._process_event(event, league)
-                    total_fixtures += created
+            events = data.get('events', [])
+            for event in events:
+                created = self._process_event(event, league)
+                total_fixtures += created
 
         db.session.commit()
         logger.info(f'Football: Ingested {total_fixtures} fixtures')

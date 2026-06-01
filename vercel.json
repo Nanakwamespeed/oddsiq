@@ -13,12 +13,32 @@
   ],
   "crons": [
     {
-      "path": "/api/cron/ingest",
+      "path": "/api/cron/ingest/football",
       "schedule": "0 0 * * *"
     },
     {
-      "path": "/api/cron/predict",
+      "path": "/api/cron/ingest/basketball",
+      "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/cron/ingest/tennis",
+      "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/cron/ingest/stats",
+      "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/cron/ingest/odds",
+      "schedule": "5 0 * * *"
+    },
+    {
+      "path": "/api/cron/predict/1x2",
       "schedule": "0 1 * * *"
+    },
+    {
+      "path": "/api/cron/predict/markets",
+      "schedule": "15 1 * * *"
     },
     {
       "path": "/api/cron/accuracy",

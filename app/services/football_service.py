@@ -128,11 +128,13 @@ class FootballService:
         sport = self.get_or_create_sport()
         total_fixtures = 0
 
-        # Single date-range request per league instead of one request per day.
-        # ESPN accepts ?dates=YYYYMMDD-YYYYMMDD and returns all events in the window.
-        start = datetime.utcnow() - timedelta(days=3)
-        end = datetime.utcnow() + timedelta(days=days_ahead)
-        date_range = f"{start.strftime('%Y%m%d')}-{end.strftime('%Y%m%d')}"
+        # ESPN returns results oldest-first, so starting the range in the past
+        # pushes upcoming matches off the first page. Use two calls per league:
+        #   1. upcoming: today → +days_ahead  (the important one)
+        #   2. lookback: today-3 → yesterday  (to update finished scores)
+        today = datetime.utcnow()
+        upcoming_range = f"{today.strftime('%Y%m%d')}-{(today + timedelta(days=days_ahead)).strftime('%Y%m%d')}"
+        lookback_range = f"{(today - timedelta(days=3)).strftime('%Y%m%d')}-{(today - timedelta(days=1)).strftime('%Y%m%d')}"
 
         for league_code, league_info in SUPPORTED_LEAGUES.items():
             league = League.query.filter_by(external_id=f'espn_{league_code}').first()
@@ -140,15 +142,14 @@ class FootballService:
                 continue
 
             url = f'{BASE_URL}/{league_code}/scoreboard'
-            data = self._make_request(url, {'dates': date_range, 'limit': 100})
 
-            if not data:
-                continue
-
-            events = data.get('events', [])
-            for event in events:
-                created = self._process_event(event, league)
-                total_fixtures += created
+            for date_range in (upcoming_range, lookback_range):
+                data = self._make_request(url, {'dates': date_range, 'limit': 100})
+                if not data:
+                    continue
+                for event in data.get('events', []):
+                    created = self._process_event(event, league)
+                    total_fixtures += created
 
         db.session.commit()
         logger.info(f'Football: Ingested {total_fixtures} fixtures')
